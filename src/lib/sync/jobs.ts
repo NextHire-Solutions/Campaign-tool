@@ -1430,13 +1430,50 @@ export function makeCampaignLeadsJob(windowDays: number | null, pageBudget: numb
      */
     let recentlyActive: Set<number> | null = null;
     if (since) {
-      const { data: active } = await sb
-        .from("campaign_day_stats")
-        .select("campaign_id")
+      /*
+       * THE GATE ONLY APPLIES IF THE THING IT READS IS ITSELF CURRENT.
+       *
+       * This skip depends on campaign_day_stats, which is written by another
+       * job. If that job breaks, the table stops gaining recent rows, every
+       * campaign looks quiet, and this one would skip all of them — quietly
+       * doing nothing while reporting success, for as long as the other job
+       * stayed broken. A silent no-op is the worst possible failure here
+       * because nothing on any screen would look wrong.
+       *
+       * So: trust the gate only while sync-day-stats is fresh. If it is not,
+       * ignore the gate and walk every campaign — slower, and correct.
+       *
+       * (A weekend legitimately produces zero activity — 8–9 Aug 2026 were a
+       * Saturday and Sunday with 0 sends — which is exactly why "no active
+       * campaigns" cannot be treated as evidence that anything is wrong.)
+       */
+      const { data: dayStats } = await sb
+        .from("sync_state")
+        .select("last_success_at")
+        .eq("job_name", "sync-day-stats")
         .eq("team_id", teamId)
-        .gte("stat_date", since)
-        .gt("emails_sent", 0);
-      recentlyActive = new Set((active ?? []).map((r) => r.campaign_id));
+        .maybeSingle();
+
+      const lastSuccess = dayStats?.last_success_at
+        ? new Date(dayStats.last_success_at).getTime()
+        : 0;
+      // Its cadence is 3h; 12h is four missed runs, the same multiple the
+      // health thresholds use.
+      const dayStatsFresh = Date.now() - lastSuccess < 12 * 3600_000;
+
+      if (dayStatsFresh) {
+        const { data: active } = await sb
+          .from("campaign_day_stats")
+          .select("campaign_id")
+          .eq("team_id", teamId)
+          .gte("stat_date", since)
+          .gt("emails_sent", 0);
+        recentlyActive = new Set((active ?? []).map((r) => r.campaign_id));
+      } else {
+        console.warn(
+          "[sync] campaign-leads: sync-day-stats is stale, so the quiet-campaign skip is disabled",
+        );
+      }
     }
 
     let pagesRead = 0;
