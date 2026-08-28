@@ -37,6 +37,25 @@ export async function GET(request: NextRequest) {
    */
   const sort = params.get("sort");
   const dir = params.get("dir") === "asc" ? "asc" : "desc";
+
+  /*
+   * Repeated params, so a value containing a comma survives — "Not connected"
+   * is a real status. Empty means no filter, which is not the same as an empty
+   * array (that would match nothing).
+   */
+  const list = (key: string) => {
+    const values = params.getAll(key).filter(Boolean);
+    return values.length ? values : null;
+  };
+  const bandFilter = list("band");
+  const providerFilter = list("provider");
+  const statusFilter = list("status");
+  /*
+   * The volume floor. On the rollups it is the DOMAIN's total, not each
+   * mailbox's — a domain sending 5,000 across three inboxes is a 5,000-send
+   * domain. That is why the two views get different parameters.
+   */
+  const minTotal = Math.max(Number(params.get("min_total") ?? 0) || 0, 0);
   const minSent = Number(params.get("min_sent") ?? DEFAULT_MIN_SENT);
   const limit = Math.min(Number(params.get("limit") ?? 100), 500);
   const offset = Math.max(Number(params.get("offset") ?? 0), 0);
@@ -47,14 +66,17 @@ export async function GET(request: NextRequest) {
     view === "inbox"
       ? sb.rpc("analytics_sender_rows", {
           p_team_id: teamId,
-          // The inbox list is not filtered by volume — you should be able to
-          // find an inbox that has never sent, which is itself a finding.
-          p_min_sent: 0,
+          // Still 0 by default — you should be able to find an inbox that has
+          // never sent, which is itself a finding. The floor is opt-in.
+          p_min_sent: minTotal,
           p_search: search,
           p_sort: sort,
           p_dir: dir,
           p_limit: limit,
           p_offset: offset,
+          p_bands: bandFilter,
+          p_providers: providerFilter,
+          p_statuses: statusFilter,
         })
       : sb.rpc("analytics_sender_groups", {
           p_team_id: teamId,
@@ -66,6 +88,10 @@ export async function GET(request: NextRequest) {
           p_sort: sort,
           p_dir: dir,
           p_search: search,
+          p_bands: bandFilter,
+          p_providers: providerFilter,
+          p_statuses: statusFilter,
+          p_min_total: minTotal,
         }),
 
     // "Problem accounts surfaced by bounce rate, so a single bad inbox can be

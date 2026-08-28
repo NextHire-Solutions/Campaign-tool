@@ -138,6 +138,10 @@ export function InfrastructureView() {
    * a query — "realty" alone would fire six, five of them already stale before
    * they returned. 250ms, matching the reply list and the leads table.
    */
+  const [bands, setBands] = useState<string[]>([]);
+  const [providers, setProviders] = useState<string[]>([]);
+  const [statuses, setStatuses] = useState<string[]>([]);
+  const [minTotal, setMinTotal] = useState(0);
   const [debounced, setDebounced] = useState("");
   useEffect(() => {
     const timer = setTimeout(() => setDebounced(search.trim()), 250);
@@ -151,7 +155,10 @@ export function InfrastructureView() {
   const { sort, toggle } = useTableSort();
 
   const { data, isFetching } = useQuery<Response>({
-    queryKey: ["infrastructure", view, debounced, sort?.key ?? "", sort?.dir ?? ""],
+    queryKey: [
+      "infrastructure", view, debounced, sort?.key ?? "", sort?.dir ?? "",
+      bands.join(","), providers.join(","), statuses.join(","), minTotal,
+    ],
     queryFn: async () => {
       const params = new URLSearchParams({ view });
       if (sort) {
@@ -159,6 +166,12 @@ export function InfrastructureView() {
         params.set("dir", sort.dir);
       }
       if (debounced) params.set("q", debounced);
+      // Appended one by one: "Not connected" contains a space and a status could
+      // one day contain a comma.
+      for (const b of bands) params.append("band", b);
+      for (const p of providers) params.append("provider", p);
+      for (const st of statuses) params.append("status", st);
+      if (minTotal > 0) params.set("min_total", String(minTotal));
       const response = await fetch(`/api/infrastructure?${params}`);
       if (!response.ok) throw new Error("Could not load the sending estate");
       return response.json();
@@ -177,6 +190,8 @@ export function InfrastructureView() {
    * the tab. The response echoes the view it was built for.
    */
   const rowsView = data?.view ?? view;
+  const hasFilters =
+    Boolean(debounced) || bands.length > 0 || providers.length > 0 || statuses.length > 0 || minTotal > 0;
   const nameHeader = rowsView === "provider" ? "Provider" : "Domain";
 
   const bandBy = new Map((data?.bands ?? []).map((b) => [b.band, b]));
@@ -417,7 +432,7 @@ export function InfrastructureView() {
 
                         {/* Every view is searchable now. Domain and provider had 503 and 2
                 rows respectively with no way to filter them. */}
-            <div className="relative min-w-[200px] max-w-xs flex-1">
+            <div className="relative min-w-[180px] max-w-xs flex-1">
               <Search className="absolute left-3 top-1/2 size-3.5 -translate-y-1/2 text-muted-foreground" />
               <Input
                 value={search}
@@ -428,6 +443,92 @@ export function InfrastructureView() {
                 className="h-9 rounded-lg pl-9 text-sm"
               />
             </div>
+
+            {/*
+              The band chips. The summary card above already says 208 healthy /
+              9 watch / 254 critical; until now there was no way to click through
+              and see WHICH. `unsent` is its own state rather than folded into
+              healthy — an inbox that has never sent has no bounce rate, and
+              counting silence as good news would be a claim the data cannot make.
+            */}
+            <div className="flex flex-wrap items-center gap-1">
+              {([
+                ["high", "Critical"],
+                ["watch", "Watch"],
+                ["ok", "Healthy"],
+                ["unsent", "Never sent"],
+              ] as const).map(([key, label]) => (
+                <button
+                  key={key}
+                  type="button"
+                  aria-pressed={bands.includes(key)}
+                  onClick={() =>
+                    setBands(
+                      bands.includes(key) ? bands.filter((b) => b !== key) : [...bands, key],
+                    )
+                  }
+                  className={cn(
+                    "rounded-full border px-2.5 py-1 text-xs transition-colors",
+                    bands.includes(key)
+                      ? "border-foreground/25 bg-accent font-medium"
+                      : "hover:bg-accent/50",
+                  )}
+                >
+                  {label}
+                </button>
+              ))}
+            </div>
+
+            {/*
+              The volume floor, and the most useful control on this screen.
+              Every one of the 254 Critical domains has sent under 50 emails; at
+              a 50-send floor Critical is ZERO. Without this the card reads as
+              254 domains on fire when nothing established is above 3%.
+            */}
+            <select
+              value={minTotal}
+              onChange={(e) => setMinTotal(Number(e.target.value))}
+              aria-label="Minimum volume"
+              className="h-9 rounded-lg border bg-background px-2.5 text-sm"
+            >
+              <option value={0}>Any volume</option>
+              <option value={50}>50+ sent</option>
+              <option value={500}>500+ sent</option>
+              <option value={1000}>1,000+ sent</option>
+            </select>
+
+            <select
+              value={providers[0] ?? ""}
+              onChange={(e) => setProviders(e.target.value ? [e.target.value] : [])}
+              aria-label="Provider"
+              className="h-9 rounded-lg border bg-background px-2.5 text-sm"
+            >
+              <option value="">All providers</option>
+              <option value="google_workspace_oauth">Google Workspace</option>
+              <option value="custom">Custom SMTP</option>
+            </select>
+
+            <select
+              value={statuses[0] ?? ""}
+              onChange={(e) => setStatuses(e.target.value ? [e.target.value] : [])}
+              aria-label="Connection status"
+              className="h-9 rounded-lg border bg-background px-2.5 text-sm"
+            >
+              <option value="">Any status</option>
+              <option value="Connected">Connected</option>
+              <option value="Not connected">Not connected</option>
+              <option value="Failed">Failed</option>
+            </select>
+
+            {bands.length || providers.length || statuses.length || minTotal ? (
+              <button
+                type="button"
+                onClick={() => { setBands([]); setProviders([]); setStatuses([]); setMinTotal(0); }}
+                className="text-xs text-muted-foreground underline underline-offset-2 hover:text-foreground"
+              >
+                Clear
+              </button>
+            ) : null}
 
             <p className="tnum ml-auto text-sm text-muted-foreground">
               {rowsView === "inbox"
@@ -468,7 +569,15 @@ export function InfrastructureView() {
               {!data?.rows.length ? (
                 <tr>
                   <td colSpan={7} className="py-16 text-center text-muted-foreground">
-                    Nothing to show. Run sync-senders if this is unexpected.
+                    {/*
+                      An empty result now has two very different causes. Once
+                      filters exist, "nothing matched" is the common one, and
+                      sending someone to run a sync over their own filter is a
+                      wrong answer delivered confidently.
+                    */}
+                    {hasFilters
+                      ? "No " + (rowsView === "inbox" ? "inboxes" : rowsView + "s") + " match these filters."
+                      : "Nothing to show. Run sync-senders if this is unexpected."}
                   </td>
                 </tr>
               ) : (
