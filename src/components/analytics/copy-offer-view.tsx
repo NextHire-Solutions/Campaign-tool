@@ -116,12 +116,25 @@ interface Suggestion {
   bounce_rate: number | null;
 }
 
+/** One campaign's copy-variation verdict. */
+interface SpintaxRow {
+  campaign_id: number;
+  campaign_name: string;
+  client_name: string | null;
+  steps: number;
+  spun_steps: number;
+  variants: number;
+  status: "spintax" | "partial" | "variants" | "none" | "unknown";
+  sent: number;
+}
+
 interface CopyResponse {
   dimensions: string[];
   rows: CopyRow[];
   coverage: {
     tagged_sent: number; total_sent: number; tagged_steps: number; total_steps: number;
   };
+  spintax: SpintaxRow[];
 }
 
 export function CopyOfferView() {
@@ -202,6 +215,23 @@ export function CopyOfferView() {
    */
   const medals = awardMedals(rows.filter((r) => !r.untagged));
   const coverage = copy.data?.coverage;
+  /*
+   * Only the campaigns with a verdict worth acting on, and only those that
+   * actually sent in this window. A campaign with unvaried copy that sent
+   * nothing is not a live problem, and listing it would bury the ones that are.
+   */
+  const unvaried = (copy.data?.spintax ?? []).filter(
+    (r) => r.status === "none" && r.sent > 0,
+  );
+  const spintaxTotals = (copy.data?.spintax ?? []).reduce(
+    (acc, r) => {
+      if (r.status === "unknown") return acc;
+      acc.sent += r.sent;
+      if (r.status === "none") acc.unvariedSent += r.sent;
+      return acc;
+    },
+    { sent: 0, unvariedSent: 0 },
+  );
   const coverPct =
     coverage && coverage.total_sent > 0 ? coverage.tagged_sent / coverage.total_sent : null;
 
@@ -395,6 +425,71 @@ export function CopyOfferView() {
                   }}
                 />
               ))}
+            </div>
+          </section>
+        ) : null}
+
+        {/* ---- Copy that never changes ---- */}
+        {unvaried.length ? (
+          <section>
+            <div className="mb-1 flex flex-wrap items-baseline justify-between gap-x-4 gap-y-1">
+              <h2 className="text-base font-semibold tracking-tight">Copy that never changes</h2>
+              <p className="tnum text-xs text-muted-foreground">
+                {fullNumber(spintaxTotals.unvariedSent)} of{" "}
+                {fullNumber(spintaxTotals.sent)} sends in range
+                {spintaxTotals.sent > 0
+                  ? ` · ${percent(spintaxTotals.unvariedSent / spintaxTotals.sent, 0)}`
+                  : ""}
+              </p>
+            </div>
+            <p className="mb-3 max-w-3xl text-xs leading-relaxed text-muted-foreground">
+              These campaigns use neither spintax{" "}
+              <code className="rounded bg-muted px-1 py-0.5 text-[11px]">
+                {"{{Hi | Hello | Hey}}"}
+              </code>{" "}
+              nor step variants, so every recipient gets a byte-identical message.
+              {/*
+                Named explicitly because the two are alternatives, not the same
+                thing. 15 campaigns vary their copy with variants and no spintax;
+                calling those unvaried would be wrong, and they are not listed.
+              */}{" "}
+              Campaigns that vary copy either way are not listed.
+            </p>
+
+            <div className="overflow-hidden rounded-xl border bg-card shadow-sm">
+              <table className="w-full table-fixed text-sm">
+                <thead>
+                  <tr className="border-b text-left text-xs text-muted-foreground">
+                    <th className="w-[46%] px-4 py-2.5 font-normal">Campaign</th>
+                    <th className="w-[22%] py-2.5 font-normal">Client</th>
+                    <th className="w-[10%] py-2.5 text-right font-normal">Steps</th>
+                    <th className="px-4 py-2.5 text-right font-normal">Sent in range</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y">
+                  {unvaried.slice(0, 12).map((row) => (
+                    <tr key={row.campaign_id} className="transition-colors hover:bg-muted/40">
+                      <td className="truncate px-4 py-2.5 font-medium" title={row.campaign_name}>
+                        {row.campaign_name}
+                      </td>
+                      <td className="truncate px-3 py-2.5 text-muted-foreground">
+                        {row.client_name ?? "—"}
+                      </td>
+                      <td className="tnum px-3 py-2.5 text-right text-muted-foreground">
+                        {fullNumber(row.steps)}
+                      </td>
+                      <td className="tnum px-4 py-2.5 text-right font-medium">
+                        {fullNumber(row.sent)}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+              {unvaried.length > 12 ? (
+                <p className="tnum border-t px-4 py-2 text-xs text-muted-foreground">
+                  and {fullNumber(unvaried.length - 12)} more
+                </p>
+              ) : null}
             </div>
           </section>
         ) : null}

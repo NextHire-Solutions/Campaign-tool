@@ -20,6 +20,7 @@ const NUMERIC_LEAD_ATTRIBUTES = new Set([
   "list-side",
 ]);
 import { dedupeBy } from "./dedupe.ts";
+import { vendorFromTags } from "./vendor.ts";
 import { getSupabase } from "@/lib/supabase/server";
 import { exclusionReason, matchCampaign } from "@/lib/clients/match.ts";
 import type { JobFn, JobResult } from "./runner";
@@ -618,6 +619,13 @@ export const syncSenders: JobFn = async ({ teamId }): Promise<JobResult> => {
     domain: s.email?.includes("@") ? s.email.split("@").pop()!.toLowerCase() : null,
     provider: s.type ?? null,
     status: s.status ?? null,
+    vendor: vendorFromTags(s.tags),
+    // Stored verbatim alongside the derived vendor, so a future question about
+    // pools or any other tag needs no re-walk of the estate.
+    tags: (s.tags ?? []).map((t) => t.name),
+    // Reappearing upstream un-archives: a re-connected inbox comes straight
+    // back rather than needing a manual reset.
+    archived_at: null,
     daily_limit: s.daily_limit ?? null,
     warmup_enabled: s.warmup_enabled ?? null,
     lifetime_sent: s.emails_sent_count ?? null,
@@ -634,6 +642,55 @@ export const syncSenders: JobFn = async ({ teamId }): Promise<JobResult> => {
 
   await chunkUpsert("sender_emails", rows, "id");
 
+  /*
+   * RECONCILE DELETIONS. This job upserted and never removed, so an inbox
+   * deleted in EmailBison stayed here for ever. Found live: 8 such rows, SEVEN
+   * of them "Not connected" — deleted precisely because they were dead. The
+   * disconnected list would have opened at 64 against a true 57 and sent
+   * someone hunting for seven inboxes that no longer exist.
+   *
+   * Archived rather than deleted: campaign_lead_sends and campaign_leads both
+   * carry sender_email_id, and a removed inbox's past sends still happened.
+   */
+  const sb = getSupabase();
+  const seen = new Set(rows.map((r) => r.id));
+
+  const { data: live, error: liveError } = await sb
+    .from("sender_emails")
+    .select("id")
+    .eq("team_id", teamId)
+    .is("archived_at", null);
+  if (liveError) throw new Error(`sender reconcile: ${liveError.message}`);
+
+  const stale = ((live ?? []) as Array<{ id: number }>)
+    .map((r) => r.id)
+    .filter((id) => !seen.has(id));
+
+  /*
+   * THE GUARD. A walk that returns far less than we hold is a truncated walk,
+   * not a mass deletion — and acting on it would archive a working estate on
+   * the strength of one bad response. Half is a wide margin: real deletions
+   * come in ones and tens, and the job re-runs hourly, so declining to act
+   * costs an hour and acting wrongly costs the Infrastructure tab.
+   */
+  const suspicious = rows.length < ((live?.length ?? 0) * 0.5);
+  let archived = 0;
+
+  if (stale.length && !suspicious) {
+    const { error } = await sb
+      .from("sender_emails")
+      .update({ archived_at: new Date().toISOString() })
+      .eq("team_id", teamId)
+      .in("id", stale);
+    if (error) throw new Error(`sender archive: ${error.message}`);
+    archived = stale.length;
+  } else if (suspicious) {
+    console.warn(
+      `[sync-senders] declined to archive ${stale.length} rows: walk returned ` +
+        `${rows.length} against ${live?.length ?? 0} live — looks truncated`,
+    );
+  }
+
   return {
     rowsWritten: rows.length,
     // 15 per page, so ~98 calls for the current estate. Cheap enough hourly,
@@ -643,6 +700,10 @@ export const syncSenders: JobFn = async ({ teamId }): Promise<JobResult> => {
       senders: rows.length,
       sending: rows.filter((r) => (r.lifetime_sent ?? 0) > 0).length,
       domains: new Set(rows.map((r) => r.domain).filter(Boolean)).size,
+      vendors: new Set(rows.map((r) => r.vendor).filter(Boolean)).size,
+      untagged: rows.filter((r) => !r.vendor).length,
+      disconnected: rows.filter((r) => r.status !== "Connected").length,
+      archived,
     },
   };
 };

@@ -62,15 +62,28 @@ export async function GET(request: NextRequest) {
 
   const offerId = request.nextUrl.searchParams.get("offer_id");
 
-  const { data, error } = await getSupabase().rpc("analytics_copy_steps", {
+  const scope = {
     p_team_id: TEAM_ID(),
     p_from: filters.from,
     p_to: filters.to,
     p_client_ids: filters.clientIds.length ? filters.clientIds : null,
     p_campaign_ids: filters.campaignIds.length ? filters.campaignIds : null,
-  });
+  };
+
+  const [{ data, error }, spintax] = await Promise.all([
+    getSupabase().rpc("analytics_copy_steps", scope),
+    /*
+     * Same scope, deliberately: a campaign flagged for unvaried copy has to be
+     * one this tab is already showing, or the flag points at something the
+     * reader cannot see.
+     */
+    getSupabase().rpc("analytics_spintax_campaigns", scope),
+  ]);
 
   if (error) return NextResponse.json({ error: error.message }, { status: 500 });
+  if (spintax.error) {
+    return NextResponse.json({ error: spintax.error.message }, { status: 500 });
+  }
 
   const steps = ((data ?? []) as StepRow[]).filter(
     (s) => !offerId || s.offer_id === offerId,
@@ -220,5 +233,6 @@ export async function GET(request: NextRequest) {
       tagged_steps: steps.filter((s) => dimensions.every((d) => s.tags?.[d])).length,
       total_steps: steps.length,
     },
+    spintax: spintax.data ?? [],
   });
 }

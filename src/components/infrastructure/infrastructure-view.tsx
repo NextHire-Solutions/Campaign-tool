@@ -30,7 +30,7 @@ import { cn } from "@/lib/utils";
  * page separate the three jobs; hairlines inside them separate rows.
  */
 
-type View = "domain" | "provider" | "inbox";
+type View = "domain" | "provider" | "vendor" | "inbox";
 
 /*
  * Cold-email thresholds. Sustained bounce above 3% is what gets a sending
@@ -72,17 +72,30 @@ function providerLabel(provider: string | null): string {
 interface Totals {
   inboxes: number; sending: number; domains: number; providers: number;
   sent: number; bounced: number; replied: number;
-  bounce_rate: number | null; reply_rate: number | null;
+  bounce_rate: number | null; reply_rate: number | null; disconnected: number;
 }
 interface InboxRow {
   id: number; email: string; name: string | null; domain: string | null;
-  provider: string | null; status: string | null; daily_limit: number | null;
+  provider: string | null; status: string | null; vendor: string | null;
+  daily_limit: number | null;
   sent: number; bounced: number; replied: number;
   bounce_rate: number | null; reply_rate: number | null;
 }
+/** A recipient provider or domain, and how much of it rejects us. */
+interface RecipientRow {
+  label: string; leads: number; bounced: number; events: number;
+  rate: number | null; domains: number;
+}
+/** A dead inbox, with the volume it was carrying when it stopped. */
+interface DeadRow {
+  id: number; email: string; domain: string | null; vendor: string | null;
+  provider: string | null; status: string | null;
+  sent: number; bounced: number; daily_limit: number | null;
+  last_sent_at: string | null;
+}
 interface GroupRow {
   label: string; inboxes: number; sent: number; bounced: number; replied: number;
-  bounce_rate: number | null; reply_rate: number | null;
+  bounce_rate: number | null; reply_rate: number | null; disconnected: number;
 }
 interface Band {
   band: BandKey; domains: number; inboxes: number; sent: number; bounced: number;
@@ -91,6 +104,11 @@ interface Response {
   view: View; totals: Totals | null;
   rows: Array<InboxRow | GroupRow>; total: number;
   problems: InboxRow[]; bands: Band[]; providers: GroupRow[]; minSent: number;
+  disconnected: DeadRow[];
+  vendors: Array<{ vendor: string; inboxes: number }>;
+  recipients: RecipientRow[];
+  rcptGroup: "esp" | "domain";
+  rcptMinLeads: number;
 }
 
 function Card({ className, children }: { className?: string; children: React.ReactNode }) {
@@ -141,6 +159,8 @@ export function InfrastructureView() {
   const [bands, setBands] = useState<string[]>([]);
   const [providers, setProviders] = useState<string[]>([]);
   const [statuses, setStatuses] = useState<string[]>([]);
+  const [vendors, setVendors] = useState<string[]>([]);
+  const [rcpt, setRcpt] = useState<"esp" | "domain">("esp");
   const [minTotal, setMinTotal] = useState(0);
   const [debounced, setDebounced] = useState("");
   useEffect(() => {
@@ -157,7 +177,8 @@ export function InfrastructureView() {
   const { data, isFetching } = useQuery<Response>({
     queryKey: [
       "infrastructure", view, debounced, sort?.key ?? "", sort?.dir ?? "",
-      bands.join(","), providers.join(","), statuses.join(","), minTotal,
+      bands.join(","), providers.join(","), statuses.join(","), vendors.join(","), minTotal,
+      rcpt,
     ],
     queryFn: async () => {
       const params = new URLSearchParams({ view });
@@ -171,7 +192,9 @@ export function InfrastructureView() {
       for (const b of bands) params.append("band", b);
       for (const p of providers) params.append("provider", p);
       for (const st of statuses) params.append("status", st);
+      for (const v of vendors) params.append("vendor", v);
       if (minTotal > 0) params.set("min_total", String(minTotal));
+      params.set("rcpt", rcpt);
       const response = await fetch(`/api/infrastructure?${params}`);
       if (!response.ok) throw new Error("Could not load the sending estate");
       return response.json();
@@ -191,8 +214,12 @@ export function InfrastructureView() {
    */
   const rowsView = data?.view ?? view;
   const hasFilters =
-    Boolean(debounced) || bands.length > 0 || providers.length > 0 || statuses.length > 0 || minTotal > 0;
-  const nameHeader = rowsView === "provider" ? "Provider" : "Domain";
+    Boolean(debounced) || bands.length > 0 || providers.length > 0 ||
+    statuses.length > 0 || vendors.length > 0 || minTotal > 0;
+  const nameHeader =
+    rowsView === "provider" ? "Provider" : rowsView === "vendor" ? "Vendor" : "Domain";
+  const dead = data?.disconnected ?? [];
+  const recipients = data?.recipients ?? [];
 
   const bandBy = new Map((data?.bands ?? []).map((b) => [b.band, b]));
   const order: BandKey[] = ["ok", "watch", "high"];
@@ -403,6 +430,211 @@ export function InfrastructureView() {
           </Card>
         </div>
 
+
+
+        {/* ---- Where the bounces LAND (the recipient side) ---- */}
+        {recipients.length ? (
+          <Card>
+            <div className="flex flex-wrap items-center justify-between gap-3 border-b px-5 py-4">
+              <div>
+                <h2 className="text-sm font-medium">Where bounces land</h2>
+                <p className="mt-0.5 text-xs text-muted-foreground">
+                  {/*
+                    The distinction that makes this card worth having: everything
+                    else on the page is OUR infrastructure. This is theirs, and a
+                    provider rejecting us is not fixed by warming an inbox.
+                  */}
+                  Share of the people we contacted at each{" "}
+                  {rcpt === "esp" ? "provider" : "domain"} whose mail bounced ·{" "}
+                  {fullNumber(data?.rcptMinLeads ?? 50)}+ contacted
+                </p>
+              </div>
+              <div className="flex items-center gap-1 rounded-lg bg-muted p-0.5">
+                {([["esp", "Provider"], ["domain", "Domain"]] as const).map(([key, text]) => (
+                  <button
+                    key={key}
+                    type="button"
+                    onClick={() => setRcpt(key)}
+                    className={cn(
+                      "rounded-md px-3 py-1 text-sm transition-colors",
+                      rcpt === key
+                        ? "bg-background font-medium text-foreground shadow-sm"
+                        : "text-muted-foreground hover:text-foreground",
+                    )}
+                  >
+                    {text}
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            <table className="w-full table-fixed text-sm">
+              <thead>
+                <tr className="border-b text-left text-xs text-muted-foreground">
+                  <th className="w-[34%] px-5 py-2.5 font-normal">
+                    {rcpt === "esp" ? "Recipient provider" : "Recipient domain"}
+                  </th>
+                  <th className="w-[15%] py-2.5 text-right font-normal">Contacted</th>
+                  <th className="w-[15%] py-2.5 text-right font-normal">Bounced</th>
+                  <th className="px-5 py-2.5 text-right font-normal">Share rejected</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y">
+                {recipients.map((row) => (
+                  <tr key={row.label} className="transition-colors hover:bg-muted/50">
+                    <td className="truncate px-5 py-2.5 font-medium" title={row.label}>
+                      {row.label}
+                      {rcpt === "esp" && row.domains > 1 ? (
+                        <span className="tnum ml-2 text-xs font-normal text-muted-foreground">
+                          {fullNumber(row.domains)} domains
+                        </span>
+                      ) : null}
+                    </td>
+                    <td className="tnum px-3 py-2.5 text-right text-muted-foreground">
+                      {fullNumber(row.leads)}
+                    </td>
+                    <td className="tnum px-3 py-2.5 text-right text-muted-foreground">
+                      {fullNumber(row.bounced)}
+                    </td>
+                    <td className="px-5 py-2.5">
+                      {/*
+                        Its own scale, not the Bounce meter: that one is notched
+                        at 3% because a SENDING domain over 3% gets flagged. A
+                        recipient domain rejecting 3% of us is completely normal
+                        and 90% is the finding, so sharing a scale would paint
+                        every row the same red.
+                      */}
+                      <span className="flex items-center justify-end gap-3">
+                        <span
+                          className="relative hidden h-1 w-24 shrink-0 overflow-hidden rounded-full bg-muted lg:block"
+                          aria-hidden
+                        >
+                          <span
+                            className="absolute inset-y-0 left-0 rounded-full"
+                            style={{
+                              width: `${Math.min(row.rate ?? 0, 1) * 100}%`,
+                              backgroundColor:
+                                (row.rate ?? 0) >= 0.5
+                                  ? BAND.high.fill
+                                  : (row.rate ?? 0) >= 0.15
+                                    ? BAND.watch.fill
+                                    : BAND.ok.fill,
+                            }}
+                          />
+                        </span>
+                        <span
+                          className={cn(
+                            "tnum w-16 text-right font-medium",
+                            (row.rate ?? 0) >= 0.5
+                              ? BAND.high.text
+                              : (row.rate ?? 0) >= 0.15
+                                ? BAND.watch.text
+                                : "",
+                          )}
+                        >
+                          {percent(row.rate, 1)}
+                        </span>
+                      </span>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+
+            <p className="border-t px-5 py-3 text-xs leading-relaxed text-muted-foreground">
+              <strong className="font-medium text-foreground">Lifetime, like the rest of this
+              page.</strong>{" "}
+              Counted as people, not messages — a dead mailbox bounces once per send, and
+              counting those separately would rank providers by how many times we retried them.
+            </p>
+          </Card>
+        ) : null}
+
+        {/* ---- Disconnected inboxes: not sending, whatever the campaign thinks ---- */}
+        {dead.length ? (
+          <Card>
+            <div className="flex flex-wrap items-baseline justify-between gap-2 border-b px-5 py-4">
+              <h2 className="text-sm font-medium">
+                Disconnected inboxes
+                <span className="tnum ml-2 rounded-full bg-[#fdecec] px-2 py-0.5 text-xs font-semibold text-[#b02525]">
+                  {fullNumber(dead.length)}
+                </span>
+              </h2>
+              <p className="text-sm text-muted-foreground">
+                {/*
+                  The count alone is something you look at once. Which of them
+                  were CARRYING VOLUME is the job — an inbox that never connected
+                  is a setup task, one that stopped is an outage, and the status
+                  cannot tell those apart.
+                */}
+                {fullNumber(dead.filter((d) => d.sent > 0).length)} were sending ·{" "}
+                {fullNumber(dead.filter((d) => d.sent === 0).length)} never did
+              </p>
+            </div>
+
+            <div className="max-h-[22rem] overflow-auto">
+              <table className="w-full table-fixed text-sm">
+                <thead className="sticky top-0 z-10 bg-card">
+                  <tr className="border-b text-left text-xs text-muted-foreground">
+                    <th className="w-[30%] px-5 py-2.5 font-normal">Mailbox</th>
+                    <th className="w-[16%] py-2.5 font-normal">Vendor</th>
+                    <th className="w-[14%] py-2.5 font-normal">Status</th>
+                    <th className="w-[12%] py-2.5 text-right font-normal">Sent</th>
+                    <th className="w-[12%] py-2.5 text-right font-normal">Bounced</th>
+                    <th className="px-5 py-2.5 text-right font-normal">Last send</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y">
+                  {dead.map((row) => (
+                    <tr key={row.id} className="transition-colors hover:bg-muted/50">
+                      <td className="truncate px-5 py-2.5" title={row.email}>
+                        <span className="font-medium">{row.email?.split("@")[0]}</span>
+                        <span className="text-muted-foreground">@{row.domain ?? "—"}</span>
+                      </td>
+                      <td className="truncate px-3 py-2.5 text-muted-foreground">
+                        {row.vendor ?? <span className="text-muted-foreground/60">Untagged</span>}
+                      </td>
+                      <td className="px-3 py-2.5">
+                        <span
+                          className={cn(
+                            "rounded px-1.5 py-0.5 text-xs",
+                            row.status === "Failed"
+                              ? "bg-[#fdecec] text-[#b02525]"
+                              : "bg-amber-100 text-amber-900",
+                          )}
+                        >
+                          {row.status}
+                        </span>
+                      </td>
+                      <td className="tnum px-3 py-2.5 text-right">
+                        {row.sent > 0 ? fullNumber(row.sent) : <span className="text-muted-foreground">–</span>}
+                      </td>
+                      <td className="tnum px-3 py-2.5 text-right text-muted-foreground">
+                        {row.sent > 0 ? fullNumber(row.bounced) : "–"}
+                      </td>
+                      <td className="tnum px-5 py-2.5 text-right text-muted-foreground">
+                        {/*
+                          DASH, never a date we do not have. last_sent_at comes
+                          from recorded campaign membership (97.6% of lifetime
+                          sends), so a blank beside a non-zero Sent means "before
+                          we recorded membership", not "never sent" — which is
+                          why Sent sits next to it and comes from the inbox's own
+                          lifetime counter.
+                        */}
+                        {row.last_sent_at
+                          ? new Date(row.last_sent_at).toLocaleDateString(undefined, {
+                              day: "numeric", month: "short", year: "numeric",
+                            })
+                          : "–"}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </Card>
+        ) : null}
+
         {/* ---- Detail: the full estate ---- */}
         <Card>
           <div className="flex flex-wrap items-center gap-2 border-b p-4">
@@ -411,6 +643,7 @@ export function InfrastructureView() {
                 [
                   ["domain", "Domain"],
                   ["provider", "Provider"],
+                  ["vendor", "Vendor"],
                   ["inbox", "Inbox"],
                 ] as const
               ).map(([key, text]) => (
@@ -520,10 +753,32 @@ export function InfrastructureView() {
               <option value="Failed">Failed</option>
             </select>
 
-            {bands.length || providers.length || statuses.length || minTotal ? (
+            {/*
+              Read from the data, not hard-coded: a vendor tagged in EmailBison
+              tomorrow appears here without a deploy. "untagged" is offered as a
+              real choice because an inbox nobody attributed is exactly the thing
+              worth listing.
+            */}
+            {data?.vendors?.length ? (
+              <select
+                value={vendors[0] ?? ""}
+                onChange={(e) => setVendors(e.target.value ? [e.target.value] : [])}
+                aria-label="Inbox vendor"
+                className="h-9 rounded-lg border bg-background px-2.5 text-sm"
+              >
+                <option value="">All vendors</option>
+                {data.vendors.map((v) => (
+                  <option key={v.vendor} value={v.vendor}>
+                    {v.vendor === "untagged" ? "Untagged" : v.vendor} ({fullNumber(v.inboxes)})
+                  </option>
+                ))}
+              </select>
+            ) : null}
+
+            {bands.length || providers.length || statuses.length || vendors.length || minTotal ? (
               <button
                 type="button"
-                onClick={() => { setBands([]); setProviders([]); setStatuses([]); setMinTotal(0); }}
+                onClick={() => { setBands([]); setProviders([]); setStatuses([]); setVendors([]); setMinTotal(0); }}
                 className="text-xs text-muted-foreground underline underline-offset-2 hover:text-foreground"
               >
                 Clear
@@ -533,7 +788,9 @@ export function InfrastructureView() {
             <p className="tnum ml-auto text-sm text-muted-foreground">
               {rowsView === "inbox"
                 ? `${fullNumber(data?.total ?? 0)} inboxes`
-                : `${fullNumber(data?.rows.length ?? 0)} ${rowsView === "domain" ? "domains" : "providers"}`}
+                : `${fullNumber(data?.rows.length ?? 0)} ${
+                    rowsView === "domain" ? "domains" : rowsView === "vendor" ? "vendors" : "providers"
+                  }`}
             </p>
           </div>
 
@@ -547,9 +804,10 @@ export function InfrastructureView() {
               <tr className="border-b text-left text-xs text-muted-foreground">
                 {rowsView === "inbox" ? (
                   <>
-                    <SortableHeader label={nameHeader} sortKey="domain" align="left" sort={sort} onToggle={toggle} className="w-[24%] px-5 py-2.5" />
-                    <SortableHeader label="Mailbox" sortKey="email" align="left" sort={sort} onToggle={toggle} className="w-[13%] py-2.5" />
-                    <SortableHeader label="Provider" sortKey="provider" align="left" sort={sort} onToggle={toggle} className="w-[14%] py-2.5" />
+                    <SortableHeader label={nameHeader} sortKey="domain" align="left" sort={sort} onToggle={toggle} className="w-[20%] px-5 py-2.5" />
+                    <SortableHeader label="Mailbox" sortKey="email" align="left" sort={sort} onToggle={toggle} className="w-[12%] py-2.5" />
+                    <SortableHeader label="Provider" sortKey="provider" align="left" sort={sort} onToggle={toggle} className="w-[12%] py-2.5" />
+                    <SortableHeader label="Vendor" sortKey="vendor" align="left" sort={sort} onToggle={toggle} className="w-[11%] py-2.5" />
                   </>
                 ) : (
                   <>
@@ -557,6 +815,13 @@ export function InfrastructureView() {
                         all — the dropdown was rendered only on the inbox view. */}
                     <SortableHeader label={nameHeader} sortKey="label" align="left" sort={sort} onToggle={toggle} className="w-[25%] px-5 py-2.5" />
                     <SortableHeader label="Inboxes" sortKey="inboxes" sort={sort} onToggle={toggle} className="w-[11%] py-2.5" />
+                    {/* Only where it is the question being asked. "How many of
+                        the inboxes this vendor sold us are dead" is the whole
+                        reason to group by vendor; on the domain rollup it would
+                        be a column of zeros. */}
+                    {rowsView === "vendor" ? (
+                      <SortableHeader label="Dead" sortKey="disconnected" sort={sort} onToggle={toggle} className="w-[9%] py-2.5" />
+                    ) : null}
                   </>
                 )}
                 <SortableHeader label="Sent" sortKey="sent" sort={sort} onToggle={toggle} className="w-[12%] py-2.5" />
@@ -568,7 +833,7 @@ export function InfrastructureView() {
             <tbody className="divide-y">
               {!data?.rows.length ? (
                 <tr>
-                  <td colSpan={7} className="py-16 text-center text-muted-foreground">
+                  <td colSpan={8} className="py-16 text-center text-muted-foreground">
                     {/*
                       An empty result now has two very different causes. Once
                       filters exist, "nothing matched" is the common one, and
@@ -610,6 +875,9 @@ export function InfrastructureView() {
                               </span>
                             ) : null}
                           </td>
+                          <td className="truncate px-3 py-2.5 text-muted-foreground" title={inbox.vendor ?? ""}>
+                            {inbox.vendor ?? <span className="text-muted-foreground/60">Untagged</span>}
+                          </td>
                         </>
                       ) : (
                         <>
@@ -621,6 +889,17 @@ export function InfrastructureView() {
                           <td className="tnum px-3 py-2.5 text-right text-muted-foreground">
                             {fullNumber(group!.inboxes)}
                           </td>
+                          {rowsView === "vendor" ? (
+                            <td className="tnum px-3 py-2.5 text-right">
+                              {group!.disconnected > 0 ? (
+                                <span className="font-medium text-[#b02525]">
+                                  {fullNumber(group!.disconnected)}
+                                </span>
+                              ) : (
+                                <span className="text-muted-foreground">0</span>
+                              )}
+                            </td>
+                          ) : null}
                         </>
                       )}
                       <td className="tnum px-3 py-2.5 text-right">{fullNumber(row.sent)}</td>

@@ -29,7 +29,7 @@ export async function GET(request: NextRequest) {
   const teamId = TEAM_ID();
   const params = request.nextUrl.searchParams;
 
-  const view = params.get("view") ?? "inbox"; // inbox | domain | provider
+  const view = params.get("view") ?? "inbox"; // inbox | domain | provider | vendor
   const search = params.get("q")?.trim() || null;
   /*
    * NULL means "no sort" — the third click on a header — and each RPC falls
@@ -50,17 +50,26 @@ export async function GET(request: NextRequest) {
   const bandFilter = list("band");
   const providerFilter = list("provider");
   const statusFilter = list("status");
+  const vendorFilter = list("vendor");
   /*
    * The volume floor. On the rollups it is the DOMAIN's total, not each
    * mailbox's — a domain sending 5,000 across three inboxes is a 5,000-send
    * domain. That is why the two views get different parameters.
    */
   const minTotal = Math.max(Number(params.get("min_total") ?? 0) || 0, 0);
+  /*
+   * The recipient-side bounce card groups by provider or by domain, and has its
+   * own volume floor for the same reason the sending side does: a provider with
+   * four contacted leads and one bounce is 25% and means nothing.
+   */
+  const rcptGroup = params.get("rcpt") === "domain" ? "domain" : "esp";
+  const rcptMinLeads = Math.max(Number(params.get("rcpt_min") ?? 50) || 0, 0);
   const minSent = Number(params.get("min_sent") ?? DEFAULT_MIN_SENT);
   const limit = Math.min(Number(params.get("limit") ?? 100), 500);
   const offset = Math.max(Number(params.get("offset") ?? 0), 0);
 
-  const [totals, rows, problems, bands, providers] = await Promise.all([
+  const [totals, rows, problems, bands, providers, disconnected, vendors, recipients] =
+    await Promise.all([
     sb.rpc("analytics_sender_totals", { p_team_id: teamId }),
 
     view === "inbox"
@@ -77,6 +86,7 @@ export async function GET(request: NextRequest) {
           p_bands: bandFilter,
           p_providers: providerFilter,
           p_statuses: statusFilter,
+          p_vendors: vendorFilter,
         })
       : sb.rpc("analytics_sender_groups", {
           p_team_id: teamId,
@@ -92,6 +102,7 @@ export async function GET(request: NextRequest) {
           p_providers: providerFilter,
           p_statuses: statusFilter,
           p_min_total: minTotal,
+          p_vendors: vendorFilter,
         }),
 
     // "Problem accounts surfaced by bounce rate, so a single bad inbox can be
@@ -124,10 +135,36 @@ export async function GET(request: NextRequest) {
      * answer at a glance or not at all.
      */
     sb.rpc("analytics_sender_groups", { p_team_id: teamId, p_group: "provider", p_min_sent: 1 }),
+
+    /*
+     * Every inbox that is not Connected, worst-first by the volume it was
+     * carrying. Always computed, whatever the current view -- a dead inbox is
+     * not a property of the table you happen to be looking at, and it is the
+     * one thing on this page that is actionable today.
+     */
+    sb.rpc("analytics_disconnected_inboxes", { p_team_id: teamId, p_limit: 200 }),
+
+    // The vendor facet for the filter control, read from the data so a vendor
+    // added upstream needs no deploy.
+    sb.rpc("analytics_sender_vendors", { p_team_id: teamId }),
+
+    /*
+     * WHERE the bounces land. The rest of this page is the sending side; this is
+     * the only thing on it that describes the recipient, and the two need
+     * opposite responses -- a bad sending domain is an inbox to pause, a bad
+     * recipient provider is list data to drop.
+     */
+    sb.rpc("analytics_bounce_recipients", {
+      p_team_id: teamId,
+      p_group: rcptGroup,
+      p_min_leads: rcptMinLeads,
+      p_limit: 15,
+    }),
   ]);
 
   const failed =
-    totals.error ?? rows.error ?? problems.error ?? bands.error ?? providers.error;
+    totals.error ?? rows.error ?? problems.error ?? bands.error ?? providers.error ??
+    disconnected.error ?? vendors.error ?? recipients.error;
   if (failed) {
     return NextResponse.json({ error: failed.message }, { status: 500 });
   }
@@ -142,6 +179,11 @@ export async function GET(request: NextRequest) {
     problems: problems.data ?? [],
     bands: bands.data ?? [],
     providers: providers.data ?? [],
+    disconnected: disconnected.data ?? [],
+    vendors: vendors.data ?? [],
+    recipients: recipients.data ?? [],
+    rcptGroup,
+    rcptMinLeads,
     minSent,
   });
 }

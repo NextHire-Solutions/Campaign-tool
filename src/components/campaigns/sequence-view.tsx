@@ -63,6 +63,49 @@ export function describeSequence(steps: SequenceStep[]): string {
   return `${stepPart} · ${variants} variant${variants === 1 ? "" : "s"}`;
 }
 
+/**
+ * Does this text carry spintax?
+ *
+ * EmailBison's spintax is a DOUBLE-braced block containing a pipe:
+ * `{{Hi | Hello | Hey}}`. Single braces are merge variables (`{FIRST_NAME}`),
+ * and `{{firstName}}` is a double-braced variable — no pipe, so it must not
+ * count. Requiring the pipe is what separates the two.
+ *
+ * The inner alternation allows one level of nesting because an option often
+ * contains a variable: `{{Hi {FIRST_NAME}, | Hey {FIRST_NAME},}}`. A pattern
+ * that cannot cross those braces silently misses exactly the well-personalised
+ * copy you would least expect to be missed.
+ *
+ * KEPT IN STEP WITH migration 064's SQL, which asks the same question of the
+ * same column. Two answers to "is this spintaxed" on one screen would be worse
+ * than none.
+ */
+const SPINTAX = /\{\{(?:[^{}]|\{[^{}]*\})*\|(?:[^{}]|\{[^{}]*\})*\}\}/;
+
+export function hasSpintax(text: string | null | undefined): boolean {
+  return text ? SPINTAX.test(text) : false;
+}
+
+/**
+ * How much of a sequence varies its wording, counting variants as variation.
+ *
+ * Variants are the other way to vary copy, so a sequence using them is not
+ * "unvaried" — reporting it as such would be wrong for the 15 campaigns that
+ * do exactly that.
+ */
+export function spintaxOf(steps: SequenceStep[]): {
+  steps: number;
+  spun: number;
+  variants: number;
+  varied: boolean;
+} {
+  const spun = steps.filter(
+    (s) => hasSpintax(s.email_body) || hasSpintax(s.email_subject),
+  ).length;
+  const variants = steps.reduce((n, s) => n + s.variants.length, 0);
+  return { steps: steps.length, spun, variants, varied: spun > 0 || variants > 0 };
+}
+
 export function StepStatsRow({ stats }: { stats: StepStats | null }) {
   if (!stats) {
     // No day-stat rows for this step. Not the same as zero sends — the
@@ -134,9 +177,29 @@ function VariantRow({
 
 export function SequenceView({ steps }: { steps: SequenceStep[] }) {
   const [open, setOpen] = useState<number | null>(steps[0]?.id ?? null);
+  const spin = spintaxOf(steps);
 
   return (
     <div className="space-y-3">
+      {/*
+        The signal where the copy actually is. A campaign-level card can tell
+        you a sequence never varies; only here can you see WHICH step to fix,
+        which is why the per-step marks below exist too.
+
+        Silent when the sequence varies its wording -- a badge on every healthy
+        sequence is not information, and would train people to ignore it.
+      */}
+      {steps.length && !spin.varied ? (
+        <p className="flex items-start gap-2 rounded-lg border border-amber-300/60 bg-amber-50 px-3 py-2 text-xs text-amber-900">
+          <AlertTriangle className="mt-px size-3.5 shrink-0" />
+          <span>
+            <strong className="font-medium">No copy variation.</strong> Every recipient gets a
+            byte-identical message — no spintax{" "}
+            <code className="rounded bg-amber-100 px-1">{"{{Hi | Hello}}"}</code> and no step
+            variants.
+          </span>
+        </p>
+      ) : null}
       {steps.map((step, index) => (
         <div key={step.id} className="rounded-xl border bg-card shadow-sm">
           <button
@@ -155,6 +218,20 @@ export function SequenceView({ steps }: { steps: SequenceStep[] }) {
             <span className="min-w-0 flex-1">
               <span className="block truncate text-sm">
                 {step.email_subject || <em className="text-muted-foreground">No subject</em>}
+                {/*
+                  Marked per step, because spintax is applied step by step: every
+                  campaign that uses it uses it in SOME steps only (32 campaigns,
+                  none of them fully). A sequence-level verdict alone would not
+                  say which email to go and fix.
+                */}
+                {hasSpintax(step.email_body) || hasSpintax(step.email_subject) ? (
+                  <span
+                    className="ml-2 rounded bg-emerald-100 px-1 text-[10px] font-medium text-emerald-800"
+                    title="This step uses spintax"
+                  >
+                    spintax
+                  </span>
+                ) : null}
               </span>
               <span className="mt-1 block">
                 <StepStatsRow stats={step.stats} />
