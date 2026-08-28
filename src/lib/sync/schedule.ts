@@ -64,6 +64,8 @@ export const SCHEDULE = [
   { job: "sync-reply-labels-deep", dailyAtUtcHour: 10 },
   // ~420 pages per day of window. The frequent one keeps membership current;
   // the nightly deep re-reads a week so late opens and clicks land.
+  // A draining queue over DNS. Hourly while it has work, then a no-op.
+  { job: "sync-esp-domains", everyMinutes: 60 },
   { job: "sync-campaign-leads", everyMinutes: 180 },
   { job: "sync-campaign-leads-deep", dailyAtUtcHour: 11 },
 ] as const satisfies readonly ScheduleEntry[];

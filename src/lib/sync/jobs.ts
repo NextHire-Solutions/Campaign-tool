@@ -1735,6 +1735,119 @@ export function makeCampaignLeadsJob(windowDays: number | null, pageBudget: numb
   };
 }
 
+
+/*
+ * Which mail provider each replier's domain actually uses, from its MX record.
+ *
+ * WHY DNS AND NOT THE DOMAIN NAME. Reading the address gets you gmail.com and
+ * then stops — 41.6% of replies come from company domains (1,041 distinct) that
+ * say nothing on their face. Their MX record says it exactly:
+ *
+ *   realestatewithfox.com -> aspmx.l.google.com     -> Google Workspace
+ *   rodeore.com           -> ...mail.protection.outlook.com -> Microsoft 365
+ *
+ * This is the lookup that "Email Provider" on the Leads screen was omitted for.
+ * There it would have been a guess from the domain, right about a third of the
+ * time; here it is measured.
+ *
+ * CACHED PER DOMAIN, FOREVER-ISH. An organisation changes mail provider once
+ * every few years, so a resolved domain is never re-queried and a failed one is
+ * recorded as 'Unknown' rather than retried on every run — 1,041 failing lookups
+ * a night would be a self-inflicted outage, and the answer would not change.
+ */
+const ESP_BY_MX: Array<[RegExp, string]> = [
+  [/(^|\.)google(mail)?\.com$|(^|\.)googlemail\.l\./i, "Google Workspace"],
+  [/protection\.outlook\.com$|(^|\.)outlook\.com$|(^|\.)hotmail\.com$/i, "Microsoft 365"],
+  [/(^|\.)zoho(cloud)?\.(com|eu)$/i, "Zoho"],
+  [/(^|\.)yahoodns\.net$|(^|\.)yahoo\.com$/i, "Yahoo"],
+  [/(^|\.)icloud\.com$|(^|\.)apple\.com$/i, "Apple iCloud"],
+  [/(^|\.)secureserver\.net$/i, "GoDaddy"],
+  [/(^|\.)registrar-servers\.com$|(^|\.)privateemail\.com$/i, "Namecheap"],
+  [/(^|\.)pphosted\.com$|(^|\.)proofpoint\./i, "Proofpoint"],
+  [/(^|\.)mimecast\./i, "Mimecast"],
+  [/(^|\.)barracudanetworks\.com$/i, "Barracuda"],
+  [/(^|\.)messagingengine\.com$/i, "Fastmail"],
+  [/(^|\.)ionos\.|(^|\.)1and1\./i, "IONOS"],
+  [/(^|\.)titan\.email$|(^|\.)flockmail\.com$/i, "Titan"],
+  [/(^|\.)mail\.ru$|(^|\.)yandex\./i, "Yandex"],
+];
+
+function espFromMx(host: string | null): string {
+  if (!host) return "No mail server";
+  for (const [pattern, name] of ESP_BY_MX) if (pattern.test(host)) return name;
+  /*
+   * Not "Unknown". The MX host IS the answer, we just have no friendly name for
+   * it — showing the hostname's own domain keeps a real provider visible instead
+   * of dropping a genuine long tail into one meaningless bucket.
+   */
+  const parts = host.replace(/\.$/, "").split(".");
+  return parts.length >= 2 ? parts.slice(-2).join(".") : host;
+}
+
+export const syncEspDomains: JobFn = async ({ teamId }): Promise<JobResult> => {
+  const sb = getSupabase();
+  const dns = await import("node:dns");
+
+  /*
+   * The work queue: replier domains we have never looked up. Read from the
+   * replies themselves rather than from leads, because this dimension describes
+   * the person who REPLIED, and a lead who never replied cannot appear on the
+   * card anyway.
+   */
+  const { data: rows, error } = await sb.rpc("unresolved_reply_domains", {
+    p_team_id: teamId,
+    p_limit: 2000,
+  });
+  if (error) throw new Error(`unresolved_reply_domains: ${error.message}`);
+
+  const domains = ((rows ?? []) as Array<{ domain: string }>).map((r) => r.domain);
+  if (!domains.length) return { rowsWritten: 0, apiCalls: 0, detail: { resolved: 0, pending: 0 } };
+
+  const resolved: Record<string, unknown>[] = [];
+  let failures = 0;
+
+  // DNS is cheap and parallel-friendly; 20 at a time keeps the resolver happy.
+  await pool(domains, 20, async (domain) => {
+    try {
+      const records = await dns.promises.resolveMx(domain);
+      // Lowest preference wins — that is the primary exchanger.
+      const best = records.sort((a, b) => a.priority - b.priority)[0];
+      const host = best?.exchange ?? null;
+      resolved.push({
+        domain,
+        esp: espFromMx(host),
+        mx_host: host,
+        checked_at: new Date().toISOString(),
+      });
+    } catch {
+      /*
+       * NXDOMAIN, no MX, or a timeout. Recorded rather than skipped, so the
+       * queue drains — an unrecorded failure would be retried on every run for
+       * ever, and the answer would not change.
+       */
+      failures++;
+      resolved.push({
+        domain,
+        esp: "Unknown",
+        mx_host: null,
+        checked_at: new Date().toISOString(),
+      });
+    }
+  });
+
+  await chunkUpsert("esp_domains", resolved, "domain", 1000);
+
+  return {
+    rowsWritten: resolved.length,
+    apiCalls: 0, // DNS, not EmailBison — this spends no API budget
+    detail: {
+      resolved: resolved.length - failures,
+      unresolvable: failures,
+      distinctEsps: new Set(resolved.map((r) => r.esp)).size,
+    },
+  };
+};
+
 export const JOBS = {
   "sync-entities": syncEntities,
   "sync-steps": syncSteps,
@@ -1765,6 +1878,8 @@ export const JOBS = {
    * pages is about 7.5 minutes, comfortably inside the 10-minute lock so a
    * concurrent tick never steals it and runs a second copy.
    */
+  // DNS only — no EmailBison budget spent, and the queue drains to empty.
+  "sync-esp-domains": syncEspDomains,
   "sync-campaign-leads": makeCampaignLeadsJob(2, 3000),
   // The wide window exists to re-read opens and clicks that accrued after the
   // send — the thing a summed rollup could never have picked up.
