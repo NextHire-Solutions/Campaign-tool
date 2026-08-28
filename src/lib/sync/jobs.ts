@@ -1273,7 +1273,7 @@ interface ReplyLabelRow {
  * so they cannot match — the filter is belt and braces, and it makes the
  * intent explicit rather than accidental.
  */
-export function makeReplyLabelsJob(full: boolean): JobFn {
+export function makeReplyLabelsJob(sweepDays: number | null): JobFn {
   return async ({ teamId, watermark }): Promise<JobResult> => {
     const base = (process.env.OUTCOMES_BASE_URL ?? "").replace(/\/$/, "");
     const token = process.env.OUTCOMES_TOKEN;
@@ -1282,12 +1282,44 @@ export function makeReplyLabelsJob(full: boolean): JobFn {
     }
 
     const startedAt = new Date().toISOString();
-    // A 6h overlap absorbs clock skew and any label applied while the last run
-    // was mid-flight. Re-reading is free — the writer skips unchanged rows.
+
+    /*
+     * THE DEEP SWEEP IS A WINDOW, NOT A FULL RE-READ, AND THAT IS FORCED.
+     *
+     * It used to send no `updated_since` at all, asking for every thread. That
+     * request now fails: the endpoint returns 500 after ~8.5s, which is a
+     * timeout rather than a rejection — measured 2026-08-28 across every page
+     * size, so it is not about how much we ask for per page but how much the
+     * query has to scan.
+     *
+     *   updated_since = 7 days   → 200 in  2.1s     993 threads
+     *                  30 days   → 200 in  3.5s   3,000 threads
+     *                  60 days   → 200 in  7.1s   6,421 threads
+     *                  90 days   → 500 in  8.5s
+     *                  none      → 500 in  8.5s
+     *
+     * So the wall sits somewhere past 60 days, and a from-scratch rebuild is
+     * simply not available from this feed any more. 30 days is chosen for
+     * margin, not for coverage: it is half the largest window that has ever
+     * worked, on an endpoint whose timings vary by 2x between runs.
+     *
+     * That is enough for what this job is actually FOR. It is drift repair —
+     * catching a label that changed while the frequent job's 6-hour overlap was
+     * looking elsewhere — not a rebuild. A month of label changes is a wide net.
+     *
+     * What is genuinely lost: if a thread's label changed more than 30 days ago
+     * AND the frequent job missed it at the time, nothing will now correct it.
+     * Recovering that needs the endpoint fixed upstream, not a wider window here.
+     */
     const since =
-      !full && watermark
-        ? new Date(new Date(watermark).getTime() - 6 * 3600_000).toISOString()
-        : null;
+      sweepDays != null
+        ? new Date(Date.now() - sweepDays * 86_400_000).toISOString()
+        : watermark
+          ? // A 6h overlap absorbs clock skew and any label applied while the
+            // last run was mid-flight. Re-reading is free — the writer skips
+            // unchanged rows.
+            new Date(new Date(watermark).getTime() - 6 * 3600_000).toISOString()
+          : null;
 
     const rows: ReplyLabelRow[] = [];
     let apiCalls = 0;
@@ -1368,6 +1400,7 @@ export function makeReplyLabelsJob(full: boolean): JobFn {
       watermark: startedAt,
       detail: {
         threads: rows.length,
+        window: sweepDays != null ? `${sweepDays}d sweep` : "since watermark",
         emailbison: payload.length,
         instantly: rows.filter((r) => r.source_provider !== "emailbison").length,
         labelled,
@@ -1723,8 +1756,10 @@ export const JOBS = {
   "sync-day-stats-deep": makeDayStatsJob(14),
   // Labels move as fast as the team works the inbox, and an incremental run is
   // one or two pages. The nightly full walk catches anything the cursor missed.
-  "sync-reply-labels": makeReplyLabelsJob(false),
-  "sync-reply-labels-deep": makeReplyLabelsJob(true),
+  "sync-reply-labels": makeReplyLabelsJob(null),
+  // 30 days, not "everything" — the feed can no longer serve an unbounded read.
+  // See the note in makeReplyLabelsJob.
+  "sync-reply-labels-deep": makeReplyLabelsJob(30),
   /*
    * The page budget is set by STALE_LOCK_MS in runner.ts: at ~6.7 req/s, 3,000
    * pages is about 7.5 minutes, comfortably inside the 10-minute lock so a

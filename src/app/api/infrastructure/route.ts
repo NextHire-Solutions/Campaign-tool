@@ -60,9 +60,12 @@ export async function GET(request: NextRequest) {
           p_team_id: teamId,
           p_group: view,
           p_min_sent: 0,
-          // The domain and provider rollups had no sort at all until now.
+          // The domain and provider rollups had neither sort nor search until
+          // now — the search box was rendered for the inbox view only, and this
+          // function had no parameter to take one.
           p_sort: sort,
           p_dir: dir,
+          p_search: search,
         }),
 
     // "Problem accounts surfaced by bounce rate, so a single bad inbox can be

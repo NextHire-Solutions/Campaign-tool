@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { keepPreviousData, useQuery } from "@tanstack/react-query";
 import { Loader2, Search } from "lucide-react";
 import { Input } from "@/components/ui/input";
@@ -134,6 +134,16 @@ export function InfrastructureView() {
   const [view, setView] = useState<View>("domain");
   const [search, setSearch] = useState("");
   /*
+   * Debounced, because the search is server-side. Without it every keystroke is
+   * a query — "realty" alone would fire six, five of them already stale before
+   * they returned. 250ms, matching the reply list and the leads table.
+   */
+  const [debounced, setDebounced] = useState("");
+  useEffect(() => {
+    const timer = setTimeout(() => setDebounced(search.trim()), 250);
+    return () => clearTimeout(timer);
+  }, [search]);
+  /*
    * Server-side, because this list is paged — sorting the 100 rows the browser
    * holds out of 1,470 inboxes would look exactly like sorting the estate and
    * name the wrong worst inbox. p_sort/p_dir travel to the RPC.
@@ -141,14 +151,14 @@ export function InfrastructureView() {
   const { sort, toggle } = useTableSort();
 
   const { data, isFetching } = useQuery<Response>({
-    queryKey: ["infrastructure", view, search, sort?.key ?? "", sort?.dir ?? ""],
+    queryKey: ["infrastructure", view, debounced, sort?.key ?? "", sort?.dir ?? ""],
     queryFn: async () => {
       const params = new URLSearchParams({ view });
       if (sort) {
         params.set("sort", sort.key);
         params.set("dir", sort.dir);
       }
-      if (search) params.set("q", search);
+      if (debounced) params.set("q", debounced);
       const response = await fetch(`/api/infrastructure?${params}`);
       if (!response.ok) throw new Error("Could not load the sending estate");
       return response.json();
@@ -405,20 +415,19 @@ export function InfrastructureView() {
               ))}
             </div>
 
-            {view === "inbox" ? (
-              <>
-                <div className="relative min-w-[200px] max-w-xs flex-1">
-                  <Search className="absolute left-3 top-1/2 size-3.5 -translate-y-1/2 text-muted-foreground" />
-                  <Input
-                    value={search}
-                    onChange={(e) => setSearch(e.target.value)}
-                    placeholder="Search inbox or domain…"
-                    className="h-9 rounded-lg pl-9 text-sm"
-                  />
-                </div>
-
-              </>
-            ) : null}
+                        {/* Every view is searchable now. Domain and provider had 503 and 2
+                rows respectively with no way to filter them. */}
+            <div className="relative min-w-[200px] max-w-xs flex-1">
+              <Search className="absolute left-3 top-1/2 size-3.5 -translate-y-1/2 text-muted-foreground" />
+              <Input
+                value={search}
+                onChange={(e) => setSearch(e.target.value)}
+                placeholder={
+                  view === "inbox" ? "Search inbox or domain…" : "Search domain, inbox or provider…"
+                }
+                className="h-9 rounded-lg pl-9 text-sm"
+              />
+            </div>
 
             <p className="tnum ml-auto text-sm text-muted-foreground">
               {rowsView === "inbox"
@@ -445,7 +454,7 @@ export function InfrastructureView() {
                   <>
                     {/* The domain and provider rollups had no sort control at
                         all — the dropdown was rendered only on the inbox view. */}
-                    <SortableHeader label={nameHeader} align="left" sort={sort} onToggle={toggle} className="w-[25%] px-5 py-2.5" />
+                    <SortableHeader label={nameHeader} sortKey="label" align="left" sort={sort} onToggle={toggle} className="w-[25%] px-5 py-2.5" />
                     <SortableHeader label="Inboxes" sortKey="inboxes" sort={sort} onToggle={toggle} className="w-[11%] py-2.5" />
                   </>
                 )}
