@@ -13,6 +13,7 @@ import {
   MoreHorizontal,
   Pause,
   Play,
+  Inbox,
   Search,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
@@ -33,6 +34,7 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
+import { AssignInboxesDialog } from "@/components/campaigns/assign-inboxes-dialog";
 import { SyncButton } from "@/components/analytics/sync-button";
 import { DASH, fullNumber, percent } from "@/lib/analytics/format.ts";
 import {
@@ -175,6 +177,7 @@ export function CampaignsPage() {
   const [view, setView] = useState<"list" | "grid">("list");
   const [selected, setSelected] = useState<Set<number>>(new Set());
   const [pending, setPending] = useState<{ action: CampaignAction; ids: number[] } | null>(null);
+  const [assigningInboxes, setAssigningInboxes] = useState(false);
   const [results, setResults] = useState<{ action: CampaignAction; results: ActionResult[] } | null>(
     null,
   );
@@ -403,6 +406,13 @@ export function CampaignsPage() {
         </div>
       </div>
 
+      <AssignInboxesDialog
+        campaignIds={[...selected]}
+        open={assigningInboxes}
+        onOpenChange={setAssigningInboxes}
+        onDone={() => setSelected(new Set())}
+      />
+
       {selected.size > 0 ? (
         <div className="flex shrink-0 items-center gap-2 border-b bg-accent/40 px-6 py-2">
           <span className="tnum text-xs font-medium">{selected.size} selected</span>
@@ -428,6 +438,21 @@ export function CampaignsPage() {
               </Button>
             );
           })}
+          {/*
+            Separated from the status actions because it is a different kind of
+            change: pause/resume/archive move a campaign through its lifecycle,
+            this one decides which mailboxes send for it. It also has no
+            eligibility rule — any campaign can be given inboxes.
+          */}
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={() => setAssigningInboxes(true)}
+            className="h-7 gap-1.5 text-xs"
+          >
+            <Inbox className="size-3" />
+            Inboxes
+          </Button>
           <Button
             variant="ghost"
             size="sm"
