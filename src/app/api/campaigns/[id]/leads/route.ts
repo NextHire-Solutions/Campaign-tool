@@ -50,6 +50,36 @@ export async function GET(
    */
   const wantFacets = q.get("facets") === "1";
 
+  /*
+   * "Select every lead matching this filter", for the removal flow. Returns ids
+   * only, from a function that shares this one's filter logic verbatim (067) —
+   * if the two ever disagreed, the dialog would state a count that was true of
+   * neither the screen nor the removal.
+   *
+   * Answered here and returned early: it needs neither the page nor the facets,
+   * and running the decorated row query for a list of integers is exactly what
+   * 067 exists to avoid.
+   */
+  if (q.get("ids") === "1") {
+    const { data, error } = await sb.rpc("analytics_campaign_lead_ids", {
+      p_team_id: teamId,
+      p_campaign_id: campaignId,
+      p_search: search,
+      p_status: status.length ? status : null,
+    });
+    if (error) {
+      console.error("[api/campaigns/leads:ids]", error);
+      return NextResponse.json({ error: error.message }, { status: 500 });
+    }
+    /*
+     * One row holding an array, deliberately — see 067. A row per id would be
+     * truncated at 1,000 by PostgREST without a word, and "select all 6,288"
+     * would quietly select 1,000.
+     */
+    const ids = (data ?? []) as number[];
+    return NextResponse.json({ leadIds: ids, total: ids.length });
+  }
+
   const [rows, facets] = await Promise.all([
     sb.rpc("analytics_campaign_lead_rows", {
       p_team_id: teamId,

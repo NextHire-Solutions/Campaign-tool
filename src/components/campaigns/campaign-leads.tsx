@@ -2,7 +2,9 @@
 
 import { useEffect, useState } from "react";
 import { keepPreviousData, useQuery } from "@tanstack/react-query";
-import { ChevronLeft, ChevronRight, Loader2, Search } from "lucide-react";
+import { ChevronLeft, ChevronRight, Loader2, Search, Trash2, X } from "lucide-react";
+import { Button } from "@/components/ui/button";
+import { RemoveLeadsDialog } from "@/components/campaigns/remove-leads-dialog";
 import { Input } from "@/components/ui/input";
 import { ColumnPicker, useColumnPrefs } from "@/components/analytics/column-picker";
 import { SortableHeader } from "@/components/analytics/sortable-header";
@@ -50,7 +52,13 @@ interface Response {
   facets: Array<{ status: string; leads: number }>;
 }
 
-export function CampaignLeads({ campaignId }: { campaignId: number }) {
+export function CampaignLeads({
+  campaignId,
+  campaignName = "this campaign",
+}: {
+  campaignId: number;
+  campaignName?: string;
+}) {
   const [search, setSearch] = useState("");
   const [debounced, setDebounced] = useState("");
   const [status, setStatus] = useState<string | null>(null);
@@ -60,6 +68,15 @@ export function CampaignLeads({ campaignId }: { campaignId: number }) {
     LEAD_DEFAULT_VISIBLE,
   );
   const { sort, toggle } = useTableSort();
+
+  /*
+   * Selection is by lead id, not by row index, so it survives paging, sorting
+   * and re-fetching. Selecting 40 on page 1, paging away and back must not
+   * silently select a different 40.
+   */
+  const [selected, setSelected] = useState<Set<number>>(new Set());
+  const [confirming, setConfirming] = useState(false);
+  const [loadingAll, setLoadingAll] = useState(false);
 
   useEffect(() => {
     const timer = setTimeout(() => setDebounced(search.trim()), 250);
@@ -113,7 +130,54 @@ export function CampaignLeads({ campaignId }: { campaignId: number }) {
   const total = data?.total ?? 0;
   const pages = Math.max(1, Math.ceil(total / (data?.pageSize ?? 50)));
   const facets = facetQuery.data?.facets ?? [];
-  const facetTotal = facets.reduce((n, f) => n + Number(f.leads), 0);
+  /*
+   * "Removed" is excluded from the All count on purpose. It is not one of the
+   * live statuses — a removed lead was also bounced or replied or completed —
+   * so adding it would make All exceed the number of leads on the campaign.
+   */
+  const facetTotal = facets
+    .filter((f) => f.status !== "removed")
+    .reduce((n, f) => n + Number(f.leads), 0);
+
+  const pageIds = rows.map((r) => r.leadId);
+  const allOnPageSelected = pageIds.length > 0 && pageIds.every((id) => selected.has(id));
+  const viewingRemoved = status === "removed";
+
+  const toggleOne = (leadId: number) =>
+    setSelected((current) => {
+      const next = new Set(current);
+      if (next.has(leadId)) next.delete(leadId); else next.add(leadId);
+      return next;
+    });
+
+  const togglePage = () =>
+    setSelected((current) => {
+      const next = new Set(current);
+      if (allOnPageSelected) for (const id of pageIds) next.delete(id);
+      else for (const id of pageIds) next.add(id);
+      return next;
+    });
+
+  /*
+   * Selecting beyond the page asks the SERVER for the matching ids rather than
+   * assembling them from pages the browser has seen. Anything else would select
+   * the 50 rows currently loaded while the button said 6,288 — and the removal
+   * would then take a different set from the one the dialog named.
+   */
+  const selectAllMatching = async () => {
+    setLoadingAll(true);
+    try {
+      const idParams = new URLSearchParams({ ids: "1" });
+      if (debounced) idParams.set("q", debounced);
+      if (status) idParams.append("status", status);
+      const response = await fetch(`/api/campaigns/${campaignId}/leads?${idParams}`);
+      if (!response.ok) throw new Error("Could not load the full selection");
+      const body: { leadIds: number[] } = await response.json();
+      setSelected(new Set(body.leadIds));
+    } finally {
+      setLoadingAll(false);
+    }
+  };
 
   return (
     <div className="space-y-3">
@@ -167,6 +231,73 @@ export function CampaignLeads({ campaignId }: { campaignId: number }) {
         </div>
       </div>
 
+      {/*
+        The selection bar. Replaces nothing when empty rather than reserving
+        space, so the table does not shift under the cursor as rows are ticked.
+      */}
+      {selected.size > 0 ? (
+        <div className="flex flex-wrap items-center gap-3 rounded-lg border bg-accent/40 px-3 py-2 text-sm">
+          <span className="tnum font-medium">
+            {fullNumber(selected.size)} selected
+          </span>
+
+          {/*
+            Offered only when the filter matches more than the page, and it says
+            the real total — the number the removal will actually act on.
+          */}
+          {total > pageIds.length && selected.size < total ? (
+            <button
+              type="button"
+              onClick={selectAllMatching}
+              disabled={loadingAll}
+              className="text-xs underline underline-offset-2 hover:text-foreground disabled:opacity-50"
+            >
+              {loadingAll ? "Loading…" : `Select all ${fullNumber(total)} matching`}
+            </button>
+          ) : null}
+
+          <button
+            type="button"
+            onClick={() => setSelected(new Set())}
+            className="flex items-center gap-1 text-xs text-muted-foreground underline underline-offset-2 hover:text-foreground"
+          >
+            <X className="size-3" /> Clear
+          </button>
+
+          <div className="ml-auto">
+            {/*
+              Hidden while viewing the Removed facet: those leads are already
+              off the campaign, and offering to remove them again would be an
+              action that cannot do anything.
+            */}
+            {viewingRemoved ? (
+              <span className="text-xs text-muted-foreground">
+                Already removed from this campaign
+              </span>
+            ) : (
+              <Button
+                size="sm"
+                variant="destructive"
+                onClick={() => setConfirming(true)}
+                className="h-7"
+              >
+                <Trash2 className="mr-1.5 size-3.5" />
+                Remove from campaign
+              </Button>
+            )}
+          </div>
+        </div>
+      ) : null}
+
+      <RemoveLeadsDialog
+        campaignId={campaignId}
+        campaignName={campaignName}
+        leadIds={[...selected]}
+        open={confirming}
+        onOpenChange={setConfirming}
+        onDone={() => setSelected(new Set())}
+      />
+
       {isLoading ? (
         <div className="rounded-xl border p-10 text-center text-sm text-muted-foreground">
           Loading leads…
@@ -186,7 +317,18 @@ export function CampaignLeads({ campaignId }: { campaignId: number }) {
               <thead>
                 <tr className="border-b bg-muted/30 text-[11px] uppercase tracking-wider text-muted-foreground">
                   <th className="sticky left-0 z-20 min-w-[260px] bg-muted/30 px-3 py-2 text-left font-medium">
-                    Lead
+                    <span className="flex items-center gap-2.5">
+                      <input
+                        type="checkbox"
+                        checked={allOnPageSelected}
+                        onChange={togglePage}
+                        aria-label={
+                          allOnPageSelected ? "Deselect this page" : "Select this page"
+                        }
+                        className="size-3.5 cursor-pointer accent-foreground"
+                      />
+                      Lead
+                    </span>
                   </th>
                   {columns.map((c) => (
                     <SortableHeader
@@ -204,14 +346,25 @@ export function CampaignLeads({ campaignId }: { campaignId: number }) {
                 {rows.map((row) => (
                   <tr key={row.leadId} className="hover:bg-accent/30">
                     <td className="sticky left-0 z-10 min-w-[260px] bg-background px-3 py-2">
-                      <span className="block truncate font-medium">
-                        {row.name || row.email || `Lead #${row.leadId}`}
-                      </span>
-                      {row.name ? (
-                        <span className="block truncate text-xs text-muted-foreground">
-                          {row.email}
+                      <span className="flex items-start gap-2.5">
+                        <input
+                          type="checkbox"
+                          checked={selected.has(row.leadId)}
+                          onChange={() => toggleOne(row.leadId)}
+                          aria-label={`Select ${row.email ?? row.leadId}`}
+                          className="mt-0.5 size-3.5 shrink-0 cursor-pointer accent-foreground"
+                        />
+                        <span className="min-w-0">
+                          <span className="block truncate font-medium">
+                            {row.name || row.email || `Lead #${row.leadId}`}
+                          </span>
+                          {row.name ? (
+                            <span className="block truncate text-xs text-muted-foreground">
+                              {row.email}
+                            </span>
+                          ) : null}
                         </span>
-                      ) : null}
+                      </span>
                     </td>
                     {columns.map((c) => (
                       <td

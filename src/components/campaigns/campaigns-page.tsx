@@ -171,6 +171,7 @@ export function CampaignsPage() {
   const [status, setStatus] = useState("all");
   const [search, setSearch] = useState("");
   const [tag, setTag] = useState("");
+  const [clientId, setClientId] = useState("");
   const [view, setView] = useState<"list" | "grid">("list");
   const [selected, setSelected] = useState<Set<number>>(new Set());
   const [pending, setPending] = useState<{ action: CampaignAction; ids: number[] } | null>(null);
@@ -179,11 +180,12 @@ export function CampaignsPage() {
   );
 
   const { data, isFetching } = useQuery<ListResponse>({
-    queryKey: ["campaigns", status, search, tag],
+    queryKey: ["campaigns", status, search, tag, clientId],
     queryFn: async () => {
       const params = new URLSearchParams({ status });
       if (search) params.set("q", search);
       if (tag) params.set("tag", tag);
+      if (clientId) params.set("client_id", clientId);
       const response = await fetch(`/api/campaigns?${params}`);
       if (!response.ok) throw new Error("Failed to load campaigns");
       return response.json();
@@ -330,6 +332,31 @@ export function CampaignsPage() {
             className="h-8 pl-8 text-xs"
           />
         </div>
+
+        {/*
+          Client filter. The route already understood `client_id`; only the
+          control was missing, which is why this is a select and not a new
+          query path. Unassigned is offered as a real choice: a campaign whose
+          name matched no client is exactly the thing worth listing, and it is
+          invisible under every named client.
+        */}
+        {(data?.clients?.length ?? 0) > 0 ? (
+          <select
+            aria-label="Filter by client"
+            value={clientId}
+            onChange={(e) => setClientId(e.target.value)}
+            className="h-8 shrink-0 rounded-md border bg-background px-2 text-xs"
+          >
+            <option value="">All clients</option>
+            <option value="unassigned">Unassigned</option>
+            <option value="excluded">Excluded from reporting</option>
+            {data!.clients!.map((c) => (
+              <option key={c.id} value={c.id}>
+                {c.name}
+              </option>
+            ))}
+          </select>
+        ) : null}
 
         {/*
           Tag filter (WT §9.1, REQ page 4). Rendered only when tags exist —

@@ -327,6 +327,105 @@ export class EmailBisonClient {
     );
   }
 
+  // --- campaign membership: leads and inboxes ---------------------------------
+  //
+  // All five verified live against OpsLabs campaigns on 2026-09-09 and written
+  // up in docs/eb-api-findings.md. The paths are worth reading twice: adding
+  // leads is `…/leads/attach-leads`, while removing them is a DELETE on
+  // `…/leads` itself, and inboxes use `attach-`/`remove-` prefixes on the
+  // campaign. Being one segment out returns a plain 404 that reads exactly like
+  // "EmailBison cannot do this" — which is what it cost me the first time.
+
+  /**
+   * Adds existing leads to a campaign. Idempotent: EmailBison replies
+   * "Existing leads were not added" rather than duplicating them.
+   *
+   * THIS IS A COPY, NOT A MOVE — the leads stay in every campaign they were
+   * already in. A move is this followed by `removeLeadsFromCampaign` on the
+   * source, and that second call is the one that changes history.
+   */
+  async attachLeadsToCampaign(campaignId: number, leadIds: number[]) {
+    return this.request<{ data?: { success?: boolean; message?: string } }>(
+      `/api/campaigns/${campaignId}/leads/attach-leads`,
+      { method: "POST", body: JSON.stringify({ lead_ids: leadIds }) },
+    );
+  }
+
+  /** Attaches a whole lead list. */
+  async attachLeadListToCampaign(campaignId: number, leadListId: number) {
+    return this.request<{ data?: { success?: boolean; message?: string } }>(
+      `/api/campaigns/${campaignId}/leads/attach-lead-list`,
+      { method: "POST", body: JSON.stringify({ lead_list_id: leadListId }) },
+    );
+  }
+
+  /**
+   * Removes leads from THIS campaign only. The leads themselves survive, as
+   * does their membership of every other campaign, and so does the send history
+   * — removal stops future emails, it does not unsend past ones.
+   */
+  async removeLeadsFromCampaign(campaignId: number, leadIds: number[]) {
+    return this.request<{ data?: { success?: boolean; message?: string } }>(
+      `/api/campaigns/${campaignId}/leads`,
+      { method: "DELETE", body: JSON.stringify({ lead_ids: leadIds }) },
+    );
+  }
+
+  /** Idempotent: re-attaching replies "These emails already exist on this campaign". */
+  async attachSenderEmails(campaignId: number, senderEmailIds: number[]) {
+    return this.request<{ data?: { success?: boolean; message?: string } }>(
+      `/api/campaigns/${campaignId}/attach-sender-emails`,
+      { method: "POST", body: JSON.stringify({ sender_email_ids: senderEmailIds }) },
+    );
+  }
+
+  async removeSenderEmails(campaignId: number, senderEmailIds: number[]) {
+    return this.request<{ data?: { success?: boolean; message?: string } }>(
+      `/api/campaigns/${campaignId}/remove-sender-emails`,
+      { method: "DELETE", body: JSON.stringify({ sender_email_ids: senderEmailIds }) },
+    );
+  }
+
+  /**
+   * How many leads a campaign actually holds, in ONE call.
+   *
+   * The authority on what an attach or remove really did. EmailBison reports
+   * `success: true` on an attach even when it silently drops leads it will not
+   * accept — a `bounced` lead is refused without a word — so the only honest
+   * "applied" figure is the difference in this number, never the length of the
+   * array we sent.
+   */
+  async getCampaignLeadCount(campaignId: number): Promise<number> {
+    const response = await this.request<{ meta?: { total?: number } }>(
+      `/api/campaigns/${campaignId}/leads?page=1`,
+    );
+    return Number(response?.meta?.total ?? 0);
+  }
+
+  /** The inboxes currently sending for a campaign, all pages. */
+  async getCampaignSenderEmails(campaignId: number) {
+    return this.fetchAllPages<EBSenderEmail>(
+      `/api/campaigns/${campaignId}/sender-emails`,
+    );
+  }
+
+  /**
+   * Creates an empty campaign.
+   *
+   * `lead_ids` and `lead_list_id` are accepted and SILENTLY IGNORED here —
+   * verified. Leads go on afterwards, via attachLeadsToCampaign.
+   */
+  async createCampaign(name: string) {
+    return this.request<{ data?: EBCampaign }>("/api/campaigns", {
+      method: "POST",
+      body: JSON.stringify({ name }),
+    });
+  }
+
+  async deleteCampaign(id: number) {
+    return this.request<unknown>(`/api/campaigns/${id}`, { method: "DELETE" });
+  }
+
   /**
    * The upcoming send forecast, all pages (§10).
    *

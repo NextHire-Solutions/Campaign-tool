@@ -261,7 +261,9 @@ export function CampaignDetail({ id }: { id: number }) {
 
       <div className="min-h-0 flex-1 overflow-auto p-6">
         {tab === "Overview" ? <Overview campaign={campaign} /> : null}
-        {tab === "Leads" ? <CampaignLeads campaignId={campaign.id} /> : null}
+        {tab === "Leads" ? (
+          <CampaignLeads campaignId={campaign.id} campaignName={campaign.name} />
+        ) : null}
         {tab === "Sequence" ? (
           <Sequence
             steps={sequence}

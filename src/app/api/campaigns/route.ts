@@ -92,11 +92,23 @@ export async function GET(request: NextRequest) {
     );
   }
 
+  /*
+   * Three kinds of choice, and every campaign belongs to exactly one of them —
+   * 152 named + 10 unassigned + 17 excluded = 179, the whole workspace.
+   *
+   * "excluded" is offered because otherwise those 17 are reachable by NO option:
+   * they are deliberately kept out of client reporting (internal tests and the
+   * Interested/Not-Interested routing lists), so they carry no client, but
+   * "Unassigned" excludes them too. A filter whose options cannot between them
+   * reach every row is one that hides work.
+   */
   if (clientId) {
     items =
       clientId === "unassigned"
         ? items.filter((c) => !c.clientId && !c.excluded)
-        : items.filter((c) => c.clientId === clientId);
+        : clientId === "excluded"
+          ? items.filter((c) => c.excluded)
+          : items.filter((c) => c.clientId === clientId && !c.excluded);
   }
 
   const statusCounts: Record<string, number> = {};

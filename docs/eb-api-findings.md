@@ -650,3 +650,58 @@ comparing every field:
 
 Identical, including full HTML bodies, and exactly one `Re:` prefix on the
 threaded steps rather than the doubling described above.
+
+---
+
+# Campaign / lead / sender WRITE endpoints (verified live 2026-09-09)
+
+The public API reference is at **https://docs.emailbison.com** (index:
+`/llms.txt`); this instance serves its own spec at
+`https://send.brokerstaffer.com/api/reference.openapi` (OpenAPI 3.0.3, YAML).
+**Read those before probing.** The spec is incomplete — it lists 63 paths and
+omits every `/api/campaigns/{id}/…` sub-route below — but the prose docs cover
+them, and guessing route names cost far more than reading would have.
+
+Every row below was executed against OpsLabs test campaigns and reverted.
+
+| Method | Path | Body | Result |
+|---|---|---|---|
+| POST | `/api/campaigns/{id}/duplicate` | — | new **draft**, sequence copied, **0 leads, 0 senders** |
+| POST | `/api/campaigns/{id}/leads/attach-leads` | `{lead_ids:[]}` | 200; idempotent — "Existing leads were not added" |
+| POST | `/api/campaigns/{id}/leads/attach-lead-list` | `{lead_list_id}` | attaches a whole list |
+| DELETE | `/api/campaigns/{id}/leads` | `{lead_ids:[]}` | 200, removes from THIS campaign only |
+| POST | `/api/campaigns/{id}/attach-sender-emails` | `{sender_email_ids:[]}` | 200; re-attaching says "already exist" |
+| DELETE | `/api/campaigns/{id}/remove-sender-emails` | `{sender_email_ids:[]}` | 200 |
+| POST | `/api/campaigns` | `{name}` | 201; `lead_ids`/`lead_list_id` are **ignored** here |
+| DELETE | `/api/campaigns/{id}` | — | 200 |
+| POST | `/api/leads` | `{first_name,email}` | 201; **ignores** `campaign_id`/`campaign_ids`/`campaigns` |
+
+**Attach is a copy, not a move.** Attaching leads to a new campaign leaves them
+in the old one; a "move" is attach-then-delete, and the delete is what destroys
+that campaign's history for those leads.
+
+## Traps
+
+- **`/api/campaigns/{id}/leads` is GET/HEAD/DELETE only.** Adding goes through
+  the `…/leads/attach-leads` sub-path. Being one segment off returns a plain 404
+  that reads exactly like "no such feature".
+- **Laravel `/{id}` routes swallow made-up names.** `PATCH
+  /api/sender-emails/attach-to-campaigns` returns a *validation* error, and
+  `PUT /api/leads/attach-to-campaigns` asks for `first_name` — both are the
+  `/{id}` resource route treating the word as an id. A 405 or 422 on a guessed
+  path is not evidence the endpoint exists.
+- **`PUT /api/lead-lists/{id}` renames a real list** and needs only `{name}`.
+  Probing it against list 2 renamed a production list; it was restored, but
+  probe verbs against test records only.
+- **The leads endpoint ignores every filter** (`?status=`, `?replied=`,
+  `?filter[replied]`) — 427 pages returned regardless. Filter our side.
+- `lead_campaign_data[]` on a lead row carries per-campaign `emails_sent`,
+  `replies`, `opens`, `interested`, `status` — the "no reply" test. Lead-level
+  `status` carries `bounced`.
+
+## Bulk endpoints in the spec, not yet exercised
+
+`/api/campaigns/bulk`, `/api/leads/bulk`, `/api/leads/bulk/csv`,
+`/api/leads/multiple`, `/api/leads/create-or-update/multiple`,
+`/api/leads/bulk-update-status`, `/api/tags/attach-to-sender-emails`,
+`/api/sender-emails/daily-limits/bulk`, `/api/campaigns/sending-schedules`.

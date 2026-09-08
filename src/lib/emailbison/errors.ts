@@ -104,3 +104,37 @@ export function assertApplied(payload: unknown, endpoint: string): void {
     );
   }
 }
+
+/**
+ * The array indices EmailBison rejected in a `lead_ids` (or similar) payload.
+ *
+ * DELETE /api/campaigns/{id}/leads is ALL-OR-NOTHING: if any id in the batch is
+ * not currently attached to that campaign, the whole request is refused with
+ *
+ *   {"errors": {"lead_ids.2": ["The selected lead_ids.2 is invalid."]}}
+ *
+ * and nothing is removed. That matters because a selection made on screen goes
+ * stale — a lead removed in EmailBison, or by someone else, five minutes ago is
+ * enough to make a 500-id chunk fail entirely.
+ *
+ * The key names the ZERO-BASED INDEX into the array we sent, so the offending
+ * ids can be dropped precisely and the rest retried, rather than failing the
+ * batch or blindly retrying one id at a time.
+ *
+ * Returns indices, not ids, because that is what the API actually tells us;
+ * mapping back to ids is the caller's job and depends on the array it sent.
+ */
+export function invalidIndices(error: unknown, field: string): number[] {
+  if (!(error instanceof EmailBisonApiError)) return [];
+  const body = unwrap(error.response);
+  const errors = body?.errors;
+  if (!errors || typeof errors !== "object") return [];
+
+  const out = new Set<number>();
+  for (const key of Object.keys(errors as Record<string, unknown>)) {
+    // `lead_ids.2` → 2. Anchored so `other_ids.2` cannot match.
+    const match = new RegExp(`^${field}\\.(\\d+)$`).exec(key);
+    if (match) out.add(Number(match[1]));
+  }
+  return [...out].sort((a, b) => a - b);
+}
