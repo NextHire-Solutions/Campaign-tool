@@ -8,6 +8,8 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { CopySequenceDialog } from "@/components/campaigns/copy-sequence-dialog";
 import { PushSequenceDialog } from "@/components/campaigns/push-sequence-dialog";
+import { ReCampaignDialog } from "@/components/campaigns/re-campaign-dialog";
+import { FanOutDialog } from "@/components/campaigns/fan-out-dialog";
 import { BulkDeployPanel, useBulkDeploy } from "@/components/analytics/bulk-deploy";
 import { SequenceEditor, type EditableStep } from "@/components/campaigns/sequence-editor";
 import {
@@ -510,6 +512,8 @@ function Sequence({
 }) {
   const [copying, setCopying] = useState(false);
   const [pushing, setPushing] = useState(false);
+  const [reCampaigning, setReCampaigning] = useState(false);
+  const [fanningOut, setFanningOut] = useState(false);
   const [editing, setEditing] = useState(false);
   const deploy = useBulkDeploy();
 
@@ -561,6 +565,37 @@ function Sequence({
       >
         Push to campaigns…
       </Button>
+      {/* Duplicate & re-campaign. Sits beside the sequence tools because that
+          is what it copies — EmailBison's own duplicate carries the sequence
+          and nothing else, which is the gap this closes. */}
+      <Button
+        variant="outline"
+        size="sm"
+        className="h-8 text-xs"
+        onClick={() => setReCampaigning(true)}
+      >
+        Re-campaign…
+      </Button>
+      <Button
+        variant="outline"
+        size="sm"
+        className="h-8 text-xs"
+        onClick={() => setFanningOut(true)}
+      >
+        For multiple clients…
+      </Button>
+      <ReCampaignDialog
+        campaignId={campaignId}
+        campaignName={campaignName}
+        open={reCampaigning}
+        onOpenChange={setReCampaigning}
+      />
+      <FanOutDialog
+        campaignId={campaignId}
+        campaignName={campaignName}
+        open={fanningOut}
+        onOpenChange={setFanningOut}
+      />
       <CopySequenceDialog
         targetId={campaignId}
         targetName={campaignName}
