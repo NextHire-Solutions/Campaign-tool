@@ -52,10 +52,15 @@ export async function GET(
   });
   if (error) return NextResponse.json({ error: error.message }, { status: 500 });
 
-  const row = ((data ?? []) as Array<{ unresponsive: number; available: number }>)[0];
+  const row = ((data ?? []) as Array<{
+    unresponsive: number;
+    available: number;
+    bounced: number;
+  }>)[0];
   return NextResponse.json({
     unresponsive: Number(row?.unresponsive ?? 0),
     available: Number(row?.available ?? 0),
+    bounced: Number(row?.bounced ?? 0),
   });
 }
 
@@ -67,6 +72,12 @@ const Body = z.object({
    * re-sequencing onto a different pool is a real thing to want.
    */
   copyInboxes: z.boolean().default(true),
+  /*
+   * Strips bounced leads out of the SOURCE campaign. Off unless asked: it is
+   * the only part of this flow that changes the original, and EmailBison has
+   * no way to put a removed lead back.
+   */
+  removeBouncedFromSource: z.boolean().default(false),
   /*
    * Creating a campaign and loading thousands of leads into it is not something
    * a stray fetch should be able to do. It lands as a DRAFT, so nothing is sent
@@ -107,7 +118,10 @@ export async function POST(
   const result = await reCampaign(
     sourceId,
     parsed.data.name,
-    { copyInboxes: parsed.data.copyInboxes },
+    {
+      copyInboxes: parsed.data.copyInboxes,
+      removeBouncedFromSource: parsed.data.removeBouncedFromSource,
+    },
     current.email,
     TEAM_ID(),
   );

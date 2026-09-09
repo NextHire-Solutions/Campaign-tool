@@ -29,6 +29,8 @@ import { fullNumber } from "@/lib/analytics/format.ts";
 interface Preview {
   unresponsive: number;
   available: number;
+  /** Bounced leads still attached to the source campaign. */
+  bounced: number;
 }
 
 interface Result {
@@ -40,6 +42,7 @@ interface Result {
   leadsSelected: number;
   leadsAttached: number;
   leadsSkipped: number;
+  bouncedRemoved: number;
   rolledBack?: boolean;
   error?: string;
 }
@@ -61,6 +64,9 @@ export function ReCampaignDialog({
   // leaving the name blank and the confirm button silently disabled.
   const [name, setName] = useState("");
   const [copyInboxes, setCopyInboxes] = useState(true);
+  // Off by default: the only step here that changes the ORIGINAL campaign, and
+  // EmailBison cannot put a removed lead back.
+  const [removeBounced, setRemoveBounced] = useState(false);
   const [running, setRunning] = useState(false);
   const [result, setResult] = useState<Result | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -84,7 +90,12 @@ export function ReCampaignDialog({
       const response = await fetch(`/api/campaigns/${campaignId}/re-campaign`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ name: effectiveName.trim(), copyInboxes, confirm: true }),
+        body: JSON.stringify({
+          name: effectiveName.trim(),
+          copyInboxes,
+          removeBouncedFromSource: removeBounced,
+          confirm: true,
+        }),
       });
       const body = await response.json();
       if (!response.ok && response.status !== 207) {
@@ -138,6 +149,13 @@ export function ReCampaignDialog({
                         </strong>{" "}
                         leads.
                       </p>
+                      {result.bouncedRemoved > 0 ? (
+                        <p className="tnum text-xs text-muted-foreground">
+                          {fullNumber(result.bouncedRemoved)} bounced lead
+                          {result.bouncedRemoved === 1 ? "" : "s"} removed from{" "}
+                          {campaignName}.
+                        </p>
+                      ) : null}
                       {result.leadsSkipped > 0 ? (
                         <p className="tnum text-xs text-muted-foreground">
                           {fullNumber(result.leadsSkipped)} of the{" "}
@@ -241,6 +259,34 @@ export function ReCampaignDialog({
                       </span>
                     </span>
                   </label>
+
+                  {/*
+                    Offered only when there is something to clean. A checkbox
+                    that would do nothing is worse than no checkbox: it invites
+                    a click and then reports zero.
+                  */}
+                  {(preview?.bounced ?? 0) > 0 ? (
+                    <label className="flex items-start gap-2 text-xs">
+                      <input
+                        type="checkbox"
+                        checked={removeBounced}
+                        onChange={(e) => setRemoveBounced(e.target.checked)}
+                        className="mt-0.5 size-3.5 accent-foreground"
+                      />
+                      <span className="tnum">
+                        Also remove the{" "}
+                        <strong className="font-medium text-foreground">
+                          {fullNumber(preview?.bounced)} bounced
+                        </strong>{" "}
+                        lead{preview?.bounced === 1 ? "" : "s"} from {campaignName}.{" "}
+                        <span className="text-muted-foreground">
+                          They have already refused delivery and will refuse every
+                          remaining step. This changes the original campaign and cannot
+                          be undone.
+                        </span>
+                      </span>
+                    </label>
+                  ) : null}
 
                   <div className="flex items-start gap-2 rounded-md border border-amber-300/60 bg-amber-50 p-2.5 text-xs text-amber-900">
                     <AlertTriangle className="mt-px size-3.5 shrink-0" />

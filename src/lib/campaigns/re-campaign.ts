@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import { createEmailBisonClient } from "@/lib/emailbison/client.ts";
 import { describeEmailBisonError } from "@/lib/emailbison/errors.ts";
 import { getSupabase } from "@/lib/supabase/server";
-import { attachLeads } from "./lead-membership.ts";
+import { attachLeads, removeLeads } from "./lead-membership.ts";
 
 /*
  * Duplicate a campaign and re-sequence the people who never answered.
@@ -52,6 +52,8 @@ export interface ReCampaignResult {
   leadsAttached: number;
   /** Selected but not accepted — bounced or blocked leads EmailBison refuses. */
   leadsSkipped: number;
+  /** Bounced leads taken off the SOURCE campaign, when asked for. */
+  bouncedRemoved: number;
   stage: "duplicated" | "renamed" | "inboxes" | "leads" | "done";
   /** True when nothing attached and the empty duplicate was deleted again. */
   rolledBack?: boolean;
@@ -61,7 +63,21 @@ export interface ReCampaignResult {
 export async function reCampaign(
   sourceCampaignId: number,
   name: string,
-  options: { copyInboxes: boolean; statuses?: string[] },
+  options: {
+    copyInboxes: boolean;
+    statuses?: string[];
+    /**
+     * Also strip bounced leads out of the SOURCE campaign.
+     *
+     * Client request, and a sound one: 5,861 bounced leads sit across 135
+     * campaigns, each of them a mailbox that has already refused delivery and
+     * will refuse every remaining step, spending sending reputation to do it.
+     *
+     * Opt-in and off by default, because it is the one part of this flow that
+     * touches the ORIGINAL campaign and there is no undo.
+     */
+    removeBouncedFromSource?: boolean;
+  },
   actor: string,
   teamId: number,
 ): Promise<ReCampaignResult> {
@@ -79,6 +95,7 @@ export async function reCampaign(
     leadsSelected: 0,
     leadsAttached: 0,
     leadsSkipped: 0,
+    bouncedRemoved: 0,
     stage: "duplicated",
   };
 
@@ -113,6 +130,7 @@ export async function reCampaign(
         steps: result.steps,
         inboxes: result.inboxes,
         leads_attached: result.leadsAttached,
+        bounced_removed: result.bouncedRemoved,
         stage: result.stage,
       },
       batch_id: batchId,
@@ -230,6 +248,32 @@ export async function reCampaign(
         "still being emailed by another sequence, or that have bounced or unsubscribed.";
     await audit();
     return result;
+  }
+
+  /*
+   * The source cleanup, LAST and only after the new campaign is populated.
+   *
+   * Order matters because this is the only destructive step here. If the
+   * attach had failed we would have rolled back above and never reached this
+   * line — removing leads from a live campaign as part of an operation that
+   * then achieved nothing would be the worst possible outcome.
+   *
+   * A failure here does NOT fail the re-campaign: the new campaign exists and
+   * is correct, and reporting it as failed would invite someone to run the
+   * whole thing again.
+   */
+  if (options.removeBouncedFromSource) {
+    const { data: bouncedIds } = await sb.rpc("analytics_campaign_lead_ids", {
+      p_team_id: teamId,
+      p_campaign_id: sourceCampaignId,
+      p_search: null,
+      p_status: ["bounced"],
+    });
+    const ids = (bouncedIds ?? []) as number[];
+    if (ids.length) {
+      const removal = await removeLeads(sourceCampaignId, ids, actor, teamId);
+      result.bouncedRemoved = removal.applied;
+    }
   }
 
   result.ok = true;

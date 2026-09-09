@@ -44,6 +44,12 @@ interface Summary {
   }>;
 }
 
+interface Assigned {
+  total: number;
+  connected: number;
+  tags: Array<{ tag: string; inboxes: number }>;
+}
+
 export function AssignInboxesDialog({
   campaignIds,
   open,
@@ -73,7 +79,28 @@ export function AssignInboxesDialog({
     staleTime: 5 * 60_000,
   });
 
+  /*
+   * What is ALREADY on the campaign, for the single-campaign case.
+   *
+   * Client feedback: the dialog offered pools to attach without saying what was
+   * there, so an addition and a no-op looked identical, and a campaign sending
+   * from the wrong pool looked like every other campaign. Only fetched for one
+   * campaign — across a bulk selection there is no single answer, and showing
+   * the first one's inboxes would be worse than showing none.
+   */
+  const { data: assigned } = useQuery<Assigned>({
+    queryKey: ["campaign-inboxes", campaignIds[0]],
+    queryFn: async () => {
+      const response = await fetch(`/api/campaigns/${campaignIds[0]}/inboxes`);
+      if (!response.ok) throw new Error("Could not read the current inboxes");
+      return response.json();
+    },
+    enabled: open && campaignIds.length === 1,
+    staleTime: 60_000,
+  });
+
   const tags = data?.tags ?? [];
+  const alreadyOn = new Map((assigned?.tags ?? []).map((t) => [t.tag, t.inboxes]));
   const chosen = tags.find((t) => t.tag === tag);
   // What will actually be sent: an attach skips inboxes that cannot send.
   const willSend = chosen ? (action === "attach" ? chosen.connected : chosen.inboxes) : 0;
@@ -174,6 +201,32 @@ export function AssignInboxesDialog({
                     ))}
                   </div>
 
+                  {campaignIds.length === 1 && assigned ? (
+                    <div className="rounded-md border bg-muted/30 p-2.5 text-xs">
+                      <p className="tnum">
+                        <strong className="font-medium text-foreground">
+                          {fullNumber(assigned.total)}
+                        </strong>{" "}
+                        inbox{assigned.total === 1 ? "" : "es"} currently assigned
+                        {assigned.connected !== assigned.total ? (
+                          <span className="text-muted-foreground">
+                            {" "}
+                            · {fullNumber(assigned.total - assigned.connected)} of them cannot
+                            connect
+                          </span>
+                        ) : null}
+                      </p>
+                      {assigned.tags.length ? (
+                        <p className="tnum mt-1 text-muted-foreground">
+                          {assigned.tags
+                            .slice(0, 4)
+                            .map((t) => `${t.tag} ${fullNumber(t.inboxes)}`)
+                            .join(" · ")}
+                        </p>
+                      ) : null}
+                    </div>
+                  ) : null}
+
                   {isLoading ? (
                     <p className="text-muted-foreground">Loading inbox tags…</p>
                   ) : (
@@ -190,6 +243,16 @@ export function AssignInboxesDialog({
                         >
                           <Inbox className="size-3.5 shrink-0 text-muted-foreground" />
                           <span className="min-w-0 flex-1 truncate">{t.tag}</span>
+                          {/*
+                            Says how much of this pool is ALREADY on the campaign,
+                            so "assign" and "re-assign what is already there" are
+                            distinguishable before the click rather than after.
+                          */}
+                          {alreadyOn.has(t.tag) ? (
+                            <span className="tnum shrink-0 rounded bg-emerald-100 px-1 text-[10px] font-medium text-emerald-800">
+                              {fullNumber(alreadyOn.get(t.tag))} on
+                            </span>
+                          ) : null}
                           {/*
                             Both numbers, because they answer different questions:
                             the pool you have, and the part of it that can send.

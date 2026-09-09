@@ -14,6 +14,7 @@ import {
   Pause,
   Play,
   Inbox,
+  RotateCw,
   Search,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
@@ -35,6 +36,8 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { AssignInboxesDialog } from "@/components/campaigns/assign-inboxes-dialog";
+import { ClientPicker } from "@/components/campaigns/client-picker";
+import { ReCampaignDialog } from "@/components/campaigns/re-campaign-dialog";
 import { SyncButton } from "@/components/analytics/sync-button";
 import { DASH, fullNumber, percent } from "@/lib/analytics/format.ts";
 import {
@@ -178,6 +181,7 @@ export function CampaignsPage() {
   const [selected, setSelected] = useState<Set<number>>(new Set());
   const [pending, setPending] = useState<{ action: CampaignAction; ids: number[] } | null>(null);
   const [assigningInboxes, setAssigningInboxes] = useState(false);
+  const [reCampaigning, setReCampaigning] = useState(false);
   const [results, setResults] = useState<{ action: CampaignAction; results: ActionResult[] } | null>(
     null,
   );
@@ -344,21 +348,11 @@ export function CampaignsPage() {
           invisible under every named client.
         */}
         {(data?.clients?.length ?? 0) > 0 ? (
-          <select
-            aria-label="Filter by client"
+          <ClientPicker
+            clients={data!.clients!}
             value={clientId}
-            onChange={(e) => setClientId(e.target.value)}
-            className="h-8 shrink-0 rounded-md border bg-background px-2 text-xs"
-          >
-            <option value="">All clients</option>
-            <option value="unassigned">Unassigned</option>
-            <option value="excluded">Excluded from reporting</option>
-            {data!.clients!.map((c) => (
-              <option key={c.id} value={c.id}>
-                {c.name}
-              </option>
-            ))}
-          </select>
+            onChange={setClientId}
+          />
         ) : null}
 
         {/*
@@ -413,6 +407,17 @@ export function CampaignsPage() {
         onDone={() => setSelected(new Set())}
       />
 
+      {/* Mounted only with a single selection, so the dialog can never be
+          handed an ambiguous source campaign. */}
+      {selectedCampaigns.length === 1 ? (
+        <ReCampaignDialog
+          campaignId={selectedCampaigns[0].id}
+          campaignName={selectedCampaigns[0].name}
+          open={reCampaigning}
+          onOpenChange={setReCampaigning}
+        />
+      ) : null}
+
       {selected.size > 0 ? (
         <div className="flex shrink-0 items-center gap-2 border-b bg-accent/40 px-6 py-2">
           <span className="tnum text-xs font-medium">{selected.size} selected</span>
@@ -452,6 +457,28 @@ export function CampaignsPage() {
           >
             <Inbox className="size-3" />
             Inboxes
+          </Button>
+          {/*
+            Client feedback: re-campaign was reachable only from a campaign's
+            own Sequence tab. It builds ONE new campaign from ONE source, so it
+            is offered only when a single campaign is selected — a bulk version
+            would have to invent a name per campaign and would create as many
+            drafts as were ticked, which is not what ticking implies.
+          */}
+          <Button
+            variant="outline"
+            size="sm"
+            disabled={selected.size !== 1}
+            title={
+              selected.size === 1
+                ? undefined
+                : "Select exactly one campaign to re-campaign it"
+            }
+            onClick={() => setReCampaigning(true)}
+            className="h-7 gap-1.5 text-xs"
+          >
+            <RotateCw className="size-3" />
+            Re-campaign
           </Button>
           <Button
             variant="ghost"

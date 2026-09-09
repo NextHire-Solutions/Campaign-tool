@@ -14,6 +14,7 @@ import { cn } from "@/lib/utils";
 
 const TABS = [
   { href: "/analytics/campaign", label: "Campaign" },
+  { href: "/analytics/volume", label: "Volume" },
   { href: "/analytics/infrastructure", label: "Infrastructure" },
   { href: "/analytics/attribution", label: "Attribution" },
   { href: "/analytics/copy-offer", label: "Copy & Offer" },
