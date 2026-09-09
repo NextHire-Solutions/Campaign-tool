@@ -202,6 +202,17 @@ const EXCLUDE_PATTERNS: Array<{ pattern: RegExp; reason: string }> = [
   { pattern: /^new test client/, reason: "test campaign" },
   { pattern: /^test onboarding /, reason: "test campaign" },
   { pattern: /\btempo$/, reason: "draft/scratch campaign" },
+  /*
+   * Deliverability tests: "INBOX PLACEMENT TEST - Real Copy", "Copy of INBOX
+   * PLACEMENT Neutral Copy". They send to seed mailboxes to measure where mail
+   * lands, so they belong to no client and were sitting in Unassigned where
+   * they read as unattributed client work.
+   *
+   * Safe to match on the phrase, unlike a bare "test": no real brokerage is
+   * called "… inbox placement …", whereas one could well be called "Test Valley
+   * Realty" — which is why the list above stays narrow.
+   */
+  { pattern: /\binbox placement\b/, reason: "deliverability test" },
 ];
 
 /** Returns an exclusion reason, or null if the campaign counts as client work. */

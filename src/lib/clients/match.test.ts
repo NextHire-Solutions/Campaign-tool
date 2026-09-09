@@ -184,3 +184,22 @@ describe("exclusions", () => {
     assert.equal(exclusionReason("C21 Results - Elite Team 2 + Nicole + FMLS. GAMLS"), null);
   });
 });
+
+/*
+ * Deliverability tests belong to no client.
+ *
+ * Three of these were sitting in Unassigned, where they read as client work
+ * nobody had attributed rather than as internal testing.
+ */
+test("inbox placement tests are excluded", () => {
+  assert.equal(exclusionReason("INBOX PLACEMENT TEST - Real Copy"), "deliverability test");
+  assert.equal(exclusionReason("Copy of INBOX PLACEMENT TEST"), "deliverability test");
+  assert.equal(exclusionReason("Copy of INBOX PLACEMENT Neutral Copy"), "deliverability test");
+});
+
+test("a real client is not excluded by that rule", () => {
+  // The reason the list matches the PHRASE and never a bare "test".
+  assert.equal(exclusionReason("Test Valley Realty + Nicole + MLS"), null);
+  assert.equal(exclusionReason("Placement Partners Realty"), null);
+  assert.equal(exclusionReason("The Keyes Company + Nicole + West"), null);
+});
