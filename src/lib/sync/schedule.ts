@@ -96,6 +96,9 @@ export const SCHEDULE = [
   // rate. Placed after every EmailBison sweep so the two never contend.
   { job: "sync-instantly-replies-deep", dailyAtUtcHour: 12 },
   { job: "sync-instantly-day-stats-deep", dailyAtUtcHour: 13 },
+  // 3 requests for the whole estate, so cheap enough to run with the rest.
+  { job: "sync-instantly-account-stats", everyMinutes: 180 },
+  { job: "sync-instantly-account-stats-deep", dailyAtUtcHour: 14 },
   // A draining queue: ~8 minutes of real work per run while history is
   // incomplete, then a single call that finds nothing and stops.
   { job: "sync-instantly-replies-backfill", everyMinutes: 30 },

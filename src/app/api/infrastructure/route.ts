@@ -63,10 +63,111 @@ export async function GET(request: NextRequest) {
    * four contacted leads and one bounce is 25% and means nothing.
    */
   const rcptGroup = params.get("rcpt") === "domain" ? "domain" : "esp";
+  /*
+   * Which estate to show. EmailBison and Instantly are separate fleets of
+   * inboxes with separate suppliers and separate health, so this is a SWITCH
+   * rather than a union: "1,796 inboxes at 1.04%" across both would average
+   * away exactly the difference the page exists to surface, and the two cannot
+   * be ranked against each other anyway — EmailBison reports lifetime counters
+   * per inbox while Instantly's totals are only what we have synced.
+   */
+  const estate = params.get("estate") === "instantly" ? "instantly" : "emailbison";
   const rcptMinLeads = Math.max(Number(params.get("rcpt_min") ?? 50) || 0, 0);
   const minSent = Number(params.get("min_sent") ?? DEFAULT_MIN_SENT);
   const limit = Math.min(Number(params.get("limit") ?? 100), 500);
   const offset = Math.max(Number(params.get("offset") ?? 0), 0);
+
+  if (estate === "instantly") {
+    const [inboxRows, groups] = await Promise.all([
+      sb.rpc("analytics_instantly_account_rows", {
+        p_team_id: teamId,
+        p_search: search,
+        p_min_sent: minTotal,
+        p_limit: limit,
+        p_offset: offset,
+      }),
+      sb.rpc("analytics_instantly_account_groups", {
+        p_team_id: teamId,
+        p_min_total: minTotal,
+      }),
+    ]);
+    const failed = inboxRows.error ?? groups.error;
+    if (failed) {
+      console.error("[api/infrastructure:instantly]", failed);
+      return NextResponse.json({ error: failed.message }, { status: 500 });
+    }
+
+    type InstRow = {
+      email: string; domain: string | null; status: number | null;
+      daily_limit: number | null; sent: number | null; bounced: number | null;
+      replied: number | null; bounce_rate: number | null; reply_rate: number | null;
+      total_count: number;
+    };
+    const list = (inboxRows.data ?? []) as InstRow[];
+    const grouped = (groups.data ?? []) as Array<{
+      label: string; inboxes: number; sent: number; bounced: number;
+      replied: number; bounce_rate: number | null; reply_rate: number | null;
+    }>;
+
+    /*
+     * Totals summed from the SAME rollup the table renders, so the header and
+     * the rows cannot disagree. `sent` may be null per inbox — an account we
+     * hold no day rows for — and Number(null) is 0, so it is filtered rather
+     * than coerced.
+     */
+    const sum = (k: "sent" | "bounced" | "replied") =>
+      grouped.reduce((t, g) => t + Number(g[k] ?? 0), 0);
+    const sent = sum("sent");
+    const bounced = sum("bounced");
+
+    return NextResponse.json({
+      estate,
+      view: view === "inbox" ? "inbox" : "domain",
+      totals: {
+        inboxes: grouped.reduce((t, g) => t + Number(g.inboxes), 0),
+        sending: list.filter((r) => (r.sent ?? 0) > 0).length,
+        domains: grouped.length,
+        providers: 1,
+        sent,
+        bounced,
+        replied: sum("replied"),
+        bounce_rate: sent > 0 ? bounced / sent : null,
+        reply_rate: sent > 0 ? sum("replied") / sent : null,
+        // Instantly reports every account as status 2 while the workspace is
+        // demonstrably sending, so no "disconnected" figure is derived from it.
+        disconnected: 0,
+      },
+      rows:
+        view === "inbox"
+          ? list.map((r) => ({
+              id: r.email,
+              email: r.email,
+              name: null,
+              domain: r.domain,
+              provider: "instantly",
+              status: null,
+              vendor: null,
+              daily_limit: r.daily_limit,
+              sent: r.sent,
+              bounced: r.bounced,
+              replied: r.replied,
+              bounce_rate: r.bounce_rate,
+              reply_rate: r.reply_rate,
+              total_count: r.total_count,
+            }))
+          : grouped.map((g) => ({ ...g, disconnected: 0 })),
+      total: view === "inbox" ? Number(list[0]?.total_count ?? 0) : grouped.length,
+      problems: [],
+      bands: [],
+      providers: [],
+      disconnected: [],
+      vendors: [],
+      recipients: [],
+      rcptGroup,
+      rcptMinLeads,
+      minSent,
+    });
+  }
 
   const [totals, rows, problems, bands, providers, disconnected, vendors, recipients] =
     await Promise.all([
@@ -170,6 +271,7 @@ export async function GET(request: NextRequest) {
   }
 
   return NextResponse.json({
+    estate,
     view,
     totals: totals.data?.[0] ?? null,
     rows: rows.data ?? [],

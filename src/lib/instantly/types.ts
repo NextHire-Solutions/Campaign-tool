@@ -80,6 +80,23 @@ export interface InstantlyAccount {
   timestamp_updated?: string;
 }
 
+/** One account's activity on one day. Keyed by `email_account`, not an id. */
+export interface InstantlyAccountDailyRow {
+  date: string;
+  email_account: string;
+  sent?: number;
+  bounced?: number;
+  contacted?: number;
+  new_leads_contacted?: number;
+  opened?: number;
+  unique_opened?: number;
+  replies?: number;
+  unique_replies?: number;
+  replies_automatic?: number;
+  clicks?: number;
+  unique_clicks?: number;
+}
+
 /** A message in the unibox. Replies are the ones we care about. */
 export interface InstantlyEmail {
   id: string;

@@ -384,6 +384,90 @@ export const syncInstantlyDayStats = makeInstantlyDayStatsJob(3);
 /** Nightly drift repair over a wide window. */
 export const syncInstantlyDayStatsDeep = makeInstantlyDayStatsJob(45);
 
+// --- per-inbox sending figures ------------------------------------------------
+
+/**
+ * @param windowDays how far back to read. CAPPED AT 31 by Instantly itself.
+ *
+ * Infrastructure ranks inboxes by bounce rate, and Instantly's account list
+ * carries no counters at all — only status, daily limit and warmup state. These
+ * rows are the only place its per-inbox sends and bounces exist.
+ *
+ * A window rather than a watermark, for the same reason the campaign day-stats
+ * job uses one: figures for recent days keep moving as late bounces land, and
+ * upserting on (email, stat_date) is what makes re-reading them converge.
+ */
+function makeInstantlyAccountStatsJob(windowDays: number): JobFn {
+  return async (): Promise<JobResult> => {
+    const client = createInstantlyClient();
+    const teamId = TEAM_ID();
+    const sb = getSupabase();
+
+    /*
+     * 30, not 31. The API's cap is 31 days and its range is INCLUSIVE at both
+     * ends, so `daysAgo(31)` → today is 32 days and returns a 400. Off by one,
+     * and the error said only "Bad Request" until the client was taught to
+     * surface the API's own sentence.
+     */
+    const days = Math.min(windowDays, 30);
+    const from = daysAgo(days);
+    const to = daysAgo(0);
+
+    const { data: accounts } = await sb
+      .from("instantly_accounts")
+      .select("email")
+      .eq("team_id", teamId)
+      .is("archived_at", null);
+    const emails = ((accounts ?? []) as Array<{ email: string }>).map((a) => a.email);
+    if (!emails.length) {
+      return { rowsWritten: 0, apiCalls: 0, detail: { status: "no accounts synced yet" } };
+    }
+
+    const stats = await client.getAccountDailyStats(emails, from, to);
+
+    const rows = stats
+      // A day with nothing on it is not a fact worth storing, and storing it
+      // would make "no data" and "a real zero" identical (rule 1).
+      .filter((r) => (r.sent ?? 0) > 0 || (r.bounced ?? 0) > 0 || (r.replies ?? 0) > 0)
+      .map((r) => ({
+        email: r.email_account,
+        team_id: teamId,
+        stat_date: r.date,
+        sent: r.sent ?? 0,
+        bounced: r.bounced ?? 0,
+        contacted: r.contacted ?? 0,
+        replies: r.replies ?? 0,
+        unique_replies: r.unique_replies ?? r.replies ?? 0,
+        opened: r.opened ?? 0,
+        clicks: r.clicks ?? 0,
+        fetched_at: new Date().toISOString(),
+      }));
+
+    for (let i = 0; i < rows.length; i += 500) {
+      const { error } = await sb
+        .from("instantly_account_day_stats")
+        .upsert(rows.slice(i, i + 500), { onConflict: "email,stat_date" });
+      if (error) throw new Error(`instantly account stats: ${error.message}`);
+    }
+
+    return {
+      rowsWritten: rows.length,
+      apiCalls: Math.ceil(emails.length / 180),
+      detail: {
+        window: `${from} → ${to}`,
+        accounts: emails.length,
+        rows: rows.length,
+        sent: rows.reduce((n, r) => n + r.sent, 0),
+        bounced: rows.reduce((n, r) => n + r.bounced, 0),
+      },
+    };
+  };
+}
+
+export const syncInstantlyAccountStats = makeInstantlyAccountStatsJob(7);
+/** The widest window the API allows, nightly, to catch late bounces. */
+export const syncInstantlyAccountStatsDeep = makeInstantlyAccountStatsJob(31);
+
 // --- replies ------------------------------------------------------------------
 
 /**

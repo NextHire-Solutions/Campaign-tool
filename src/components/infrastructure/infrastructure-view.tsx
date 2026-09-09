@@ -101,6 +101,8 @@ interface Band {
   band: BandKey; domains: number; inboxes: number; sent: number; bounced: number;
 }
 interface Response {
+  /** Which fleet these rows describe; echoed so the view cannot mislabel them. */
+  estate?: "emailbison" | "instantly";
   view: View; totals: Totals | null;
   rows: Array<InboxRow | GroupRow>; total: number;
   problems: InboxRow[]; bands: Band[]; providers: GroupRow[]; minSent: number;
@@ -161,6 +163,14 @@ export function InfrastructureView() {
   const [statuses, setStatuses] = useState<string[]>([]);
   const [vendors, setVendors] = useState<string[]>([]);
   const [rcpt, setRcpt] = useState<"esp" | "domain">("esp");
+  /*
+   * Which fleet of inboxes. A switch, not a union: the two estates have
+   * different suppliers, different health and different sources for their
+   * totals — EmailBison reports lifetime counters per inbox, Instantly only
+   * what we have synced — so averaging them would hide the very difference this
+   * page exists to show.
+   */
+  const [estate, setEstate] = useState<"emailbison" | "instantly">("emailbison");
   const [minTotal, setMinTotal] = useState(0);
   const [debounced, setDebounced] = useState("");
   useEffect(() => {
@@ -178,7 +188,7 @@ export function InfrastructureView() {
     queryKey: [
       "infrastructure", view, debounced, sort?.key ?? "", sort?.dir ?? "",
       bands.join(","), providers.join(","), statuses.join(","), vendors.join(","), minTotal,
-      rcpt,
+      rcpt, estate,
     ],
     queryFn: async () => {
       const params = new URLSearchParams({ view });
@@ -195,6 +205,7 @@ export function InfrastructureView() {
       for (const v of vendors) params.append("vendor", v);
       if (minTotal > 0) params.set("min_total", String(minTotal));
       params.set("rcpt", rcpt);
+      params.set("estate", estate);
       const response = await fetch(`/api/infrastructure?${params}`);
       if (!response.ok) throw new Error("Could not load the sending estate");
       return response.json();
@@ -219,6 +230,10 @@ export function InfrastructureView() {
   const nameHeader =
     rowsView === "provider" ? "Provider" : rowsView === "vendor" ? "Vendor" : "Domain";
   const dead = data?.disconnected ?? [];
+  // The response echoes the estate it was built for, so a flipped toggle cannot
+  // paint one fleet's rows under the other's heading while the next load runs.
+  const rowsEstate = data?.estate ?? estate;
+  const isInstantly = rowsEstate === "instantly";
   const recipients = data?.recipients ?? [];
 
   const bandBy = new Map((data?.bands ?? []).map((b) => [b.band, b]));
@@ -230,8 +245,32 @@ export function InfrastructureView() {
   return (
     <div className="min-h-0 flex-1 overflow-auto bg-muted/30">
       <div className="space-y-5 p-6">
-        <header className="flex items-baseline gap-3">
+        <header className="flex flex-wrap items-baseline gap-3">
           <h1 className="text-xl font-semibold tracking-tight">Infrastructure</h1>
+          <div className="flex items-center gap-1 rounded-lg bg-muted p-0.5">
+            {([["emailbison", "EmailBison"], ["instantly", "Instantly"]] as const).map(
+              ([key, text]) => (
+                <button
+                  key={key}
+                  type="button"
+                  onClick={() => {
+                    setEstate(key);
+                    // The Instantly estate has no provider or vendor dimension,
+                    // so a view carried over from EmailBison would render empty.
+                    if (key === "instantly" && view !== "inbox") setView("domain");
+                  }}
+                  className={cn(
+                    "rounded-md px-3 py-1 text-sm transition-colors",
+                    estate === key
+                      ? "bg-background font-medium text-foreground shadow-sm"
+                      : "text-muted-foreground hover:text-foreground",
+                  )}
+                >
+                  {text}
+                </button>
+              ),
+            )}
+          </div>
           {totals ? (
             <p className="tnum text-sm text-muted-foreground">
               {fullNumber(totals.sending)} of {fullNumber(totals.inboxes)} inboxes sending
@@ -433,7 +472,7 @@ export function InfrastructureView() {
 
 
         {/* ---- Where the bounces LAND (the recipient side) ---- */}
-        {recipients.length ? (
+        {!isInstantly && recipients.length ? (
           <Card>
             <div className="flex flex-wrap items-center justify-between gap-3 border-b px-5 py-4">
               <div>
@@ -550,8 +589,13 @@ export function InfrastructureView() {
           </Card>
         ) : null}
 
-        {/* ---- Disconnected inboxes: not sending, whatever the campaign thinks ---- */}
-        {dead.length ? (
+        {/*
+          EmailBison only. Instantly reports every account as status 2 while
+          the workspace is demonstrably sending, so there is no honest
+          "disconnected" list to draw for it — see
+          docs/instantly-api-findings.md.
+        */}
+        {!isInstantly && dead.length ? (
           <Card>
             <div className="flex flex-wrap items-baseline justify-between gap-2 border-b px-5 py-4">
               <h2 className="text-sm font-medium">
@@ -640,12 +684,14 @@ export function InfrastructureView() {
           <div className="flex flex-wrap items-center gap-2 border-b p-4">
             <div className="flex items-center gap-1 rounded-lg bg-muted p-0.5">
               {(
-                [
-                  ["domain", "Domain"],
-                  ["provider", "Provider"],
-                  ["vendor", "Vendor"],
-                  ["inbox", "Inbox"],
-                ] as const
+                isInstantly
+                  ? ([["domain", "Domain"], ["inbox", "Inbox"]] as const)
+                  : ([
+                      ["domain", "Domain"],
+                      ["provider", "Provider"],
+                      ["vendor", "Vendor"],
+                      ["inbox", "Inbox"],
+                    ] as const)
               ).map(([key, text]) => (
                 <button
                   key={key}

@@ -1,5 +1,6 @@
 import type {
   InstantlyAccount,
+  InstantlyAccountDailyRow,
   InstantlyCampaign,
   InstantlyCampaignAnalytics,
   InstantlyDailyRow,
@@ -99,8 +100,23 @@ export class InstantlyClient {
       } catch {
         body = await response.text().catch(() => null);
       }
+      /*
+       * The PATH IS TRUNCATED and the API's own message put first.
+       *
+       * /accounts/analytics/daily carries up to 180 emails in its querystring,
+       * so the full path is thousands of characters — an error containing it
+       * buries the one sentence that says what went wrong ("Analytics date
+       * range cannot exceed 31 days") under a wall of URL-encoded addresses.
+       */
+      const reason =
+        body && typeof body === "object" && "message" in body
+          ? String((body as { message?: unknown }).message)
+          : undefined;
+      const shortPath = path.length > 120 ? `${path.slice(0, 120)}…` : path;
       throw new InstantlyApiError(
-        `Instantly ${response.status} ${response.statusText} on ${path}`,
+        reason
+          ? `Instantly ${response.status}: ${reason} (${shortPath})`
+          : `Instantly ${response.status} ${response.statusText} on ${shortPath}`,
         response.status,
         body,
       );
@@ -205,6 +221,41 @@ export class InstantlyClient {
 
   async getAllAccounts(): Promise<InstantlyAccount[]> {
     return this.walk<InstantlyAccount>("/accounts");
+  }
+
+  /**
+   * Per-account, per-day sending figures.
+   *
+   * TWO HARD LIMITS, both found by hitting them and both enforced here rather
+   * than left to the caller:
+   *
+   *   * the range may not exceed 31 DAYS — 400 beyond that;
+   *   * at most 200 EMAILS per request — 400 at 300, and a 536-email
+   *     querystring is refused outright with 431 Request Header Fields Too
+   *     Large, which is a transport failure rather than an API one and would
+   *     not look like a rate problem at all.
+   *
+   * Batched at 180 to stay clear of the second, which makes the whole estate 3
+   * requests per window.
+   */
+  async getAccountDailyStats(
+    emails: string[],
+    from: string,
+    to: string,
+  ): Promise<InstantlyAccountDailyRow[]> {
+    const BATCH = 180;
+    const out: InstantlyAccountDailyRow[] = [];
+
+    for (let i = 0; i < emails.length; i += BATCH) {
+      const query = new URLSearchParams({ start_date: from, end_date: to });
+      for (const email of emails.slice(i, i + BATCH)) query.append("emails", email);
+      const body = await this.request<InstantlyAccountDailyRow[]>(
+        `/accounts/analytics/daily?${query.toString()}`,
+      );
+      if (Array.isArray(body)) out.push(...body);
+    }
+
+    return out;
   }
 
   // --- emails -----------------------------------------------------------------

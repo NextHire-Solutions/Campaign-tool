@@ -23,6 +23,8 @@ import { dedupeBy } from "./dedupe.ts";
 import { vendorFromTags } from "./vendor.ts";
 import {
   syncInstantlyAccounts,
+  syncInstantlyAccountStats,
+  syncInstantlyAccountStatsDeep,
   syncInstantlyCampaigns,
   syncInstantlyClients,
   syncInstantlyDayStats,
@@ -2002,6 +2004,10 @@ export const JOBS = {
   "sync-instantly-clients": syncInstantlyClients,
   "sync-instantly-day-stats": syncInstantlyDayStats,
   "sync-instantly-day-stats-deep": syncInstantlyDayStatsDeep,
+  // Per-inbox sends and bounces — the only place Instantly's account-level
+  // figures exist, and what lets Infrastructure rank its 536 inboxes.
+  "sync-instantly-account-stats": syncInstantlyAccountStats,
+  "sync-instantly-account-stats-deep": syncInstantlyAccountStatsDeep,
   // Incremental off a watermark with a 48h overlap; the full walk is nightly
   // and takes about eleven minutes at the documented rate.
   "sync-instantly-replies": syncInstantlyReplies,
