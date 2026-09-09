@@ -1,6 +1,7 @@
 import { createInstantlyClient } from "@/lib/instantly/client.ts";
 import { getSupabase } from "@/lib/supabase/server";
 import { chunkUpsert } from "./jobs.ts";
+import { exclusionReason, matchCampaign } from "@/lib/clients/match.ts";
 import type { JobFn, JobResult } from "./runner";
 
 /*
@@ -116,6 +117,95 @@ export const syncInstantlyCampaigns: JobFn = async (): Promise<JobResult> => {
       campaigns: rows.length,
       withMetrics: rows.filter((r) => (r.emails_sent ?? 0) > 0).length,
       archived,
+    },
+  };
+};
+
+// --- which client each campaign belongs to ------------------------------------
+
+/**
+ * Resolves Instantly campaigns to clients.
+ *
+ * THE SAME MATCHER EMAILBISON USES, deliberately. Instantly follows the same
+ * naming convention — "Camelot Realty Group - Houston", "Howe Realty Group (2)
+ * - Maricopa" — so the rules that already work apply unchanged. A second
+ * implementation would be a second definition of which campaigns are a
+ * client's, and the two would drift.
+ *
+ * `manual` pins are never recomputed (rule 9): a human decision is not
+ * something a sync gets to overwrite.
+ */
+export const syncInstantlyClients: JobFn = async (): Promise<JobResult> => {
+  const sb = getSupabase();
+  const teamId = TEAM_ID();
+
+  const [{ data: clientDetail }, { data: campaigns }, { data: pinned }] =
+    await Promise.all([
+      sb.from("clients").select("id, name, aliases, match_mode").eq("team_id", teamId),
+      sb
+        .from("instantly_campaigns")
+        .select("id, name")
+        .eq("team_id", teamId)
+        .is("archived_at", null),
+      sb
+        .from("instantly_campaign_clients")
+        .select("campaign_id")
+        .eq("match_method", "manual"),
+    ]);
+
+  const matchable = (clientDetail ?? []).map((c) => ({
+    id: c.id as string,
+    name: c.name as string,
+    aliases: (c.aliases ?? []) as string[],
+    matchMode: c.match_mode as "contains" | "prefix" | "exact",
+  }));
+  const pinnedIds = new Set(
+    ((pinned ?? []) as Array<{ campaign_id: string }>).map((p) => p.campaign_id),
+  );
+
+  const rows = ((campaigns ?? []) as Array<{ id: string; name: string }>)
+    .filter((c) => !pinnedIds.has(c.id))
+    .map((c) => {
+      const reason = exclusionReason(c.name);
+      if (reason) {
+        return {
+          campaign_id: c.id,
+          client_id: null,
+          match_method: "auto",
+          matched_on: null,
+          confidence: null,
+          ambiguous: false,
+          excluded: true,
+          exclude_reason: reason,
+          resolved_at: new Date().toISOString(),
+        };
+      }
+      const result = matchCampaign(c.name, matchable);
+      return {
+        campaign_id: c.id,
+        client_id: result.clientId,
+        match_method: "auto",
+        matched_on: result.matchedOn,
+        confidence: result.confidence,
+        ambiguous: result.ambiguous,
+        excluded: false,
+        exclude_reason: null,
+        resolved_at: new Date().toISOString(),
+      };
+    });
+
+  await chunkUpsert("instantly_campaign_clients", rows, "campaign_id");
+
+  return {
+    rowsWritten: rows.length,
+    apiCalls: 0,
+    detail: {
+      campaigns: rows.length,
+      matched: rows.filter((r) => r.client_id).length,
+      unmatched: rows.filter((r) => !r.client_id && !r.excluded).length,
+      excluded: rows.filter((r) => r.excluded).length,
+      ambiguous: rows.filter((r) => r.ambiguous).length,
+      pinned: pinnedIds.size,
     },
   };
 };
@@ -380,6 +470,89 @@ function makeInstantlyRepliesJob(windowDays: number | null): JobFn {
     };
   };
 }
+
+/**
+ * Fills in reply history, oldest-ward, a bounded slice per run.
+ *
+ * A WATERMARK CANNOT DO THIS. /emails is newest-first, so the incremental job
+ * only ever moves forward — the first run captured the newest 15,000 of 22,685
+ * and no amount of re-running it would reach the 7,685 behind them. This walks
+ * the other way, from the oldest row we hold, using max_timestamp_created.
+ *
+ * A DRAINING QUEUE, like sync-esp-domains: it does real work while history is
+ * missing and becomes a no-op the moment it is complete. That shape is what
+ * lets it respect both the 20-requests-per-minute cap and the ten-minute job
+ * lock — it never tries to finish in one run, it just gets closer.
+ */
+export const syncInstantlyRepliesBackfill: JobFn = async (): Promise<JobResult> => {
+  const client = createInstantlyClient();
+  const teamId = TEAM_ID();
+  const sb = getSupabase();
+
+  const { data } = await sb
+    .from("instantly_replies")
+    .select("created_at")
+    .eq("team_id", teamId)
+    .not("created_at", "is", null)
+    .order("created_at", { ascending: true })
+    .limit(1);
+  const oldest = (data ?? [])[0]?.created_at as string | undefined;
+
+  if (!oldest) {
+    // Nothing held yet: the incremental job seeds from the newest end first,
+    // and starting both from an empty table would just fetch the same pages.
+    return { rowsWritten: 0, apiCalls: 0, detail: { status: "waiting for the first sync" } };
+  }
+
+  const emails = await client.getEmails({
+    // Exclusive-ish: the oldest row we hold comes back again and upserts to
+    // itself, which is cheaper than tracking an offset and cannot skip a row.
+    until: oldest,
+    maxPages: MAX_PAGES_PER_RUN,
+  });
+
+  const rows = emails.map((e) => {
+    const at = e.timestamp_email || e.timestamp_created;
+    return {
+      id: e.id,
+      team_id: teamId,
+      campaign_id: e.campaign_id ?? null,
+      lead_email: e.lead ?? null,
+      from_email: e.from_address_email ?? null,
+      eaccount: e.eaccount ?? null,
+      subject: e.subject ?? null,
+      preview: e.content_preview ?? null,
+      thread_id: e.thread_id ?? null,
+      step: e.step ?? null,
+      ue_type: e.ue_type ?? null,
+      i_status: e.i_status ?? null,
+      ai_interest_value: e.ai_interest_value ?? null,
+      received_at: at ?? null,
+      received_date: at ? at.slice(0, 10) : null,
+      created_at: e.timestamp_created ?? null,
+      synced_at: new Date().toISOString(),
+    };
+  });
+
+  await chunkUpsert("instantly_replies", rows, "id");
+
+  /*
+   * Only the row we already had came back, so there is nothing older left.
+   * Reporting that explicitly matters: "0 new" and "finished" look identical
+   * from the outside, and one of them means the backfill is still needed.
+   */
+  const complete = rows.length <= 1;
+
+  return {
+    rowsWritten: rows.length,
+    apiCalls: Math.ceil(rows.length / 100) + 1,
+    detail: {
+      walkedBackFrom: oldest,
+      fetched: rows.length,
+      status: complete ? "history complete" : "more history remaining",
+    },
+  };
+};
 
 export const syncInstantlyReplies = makeInstantlyRepliesJob(null);
 /*

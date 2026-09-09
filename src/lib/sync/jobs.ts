@@ -24,9 +24,11 @@ import { vendorFromTags } from "./vendor.ts";
 import {
   syncInstantlyAccounts,
   syncInstantlyCampaigns,
+  syncInstantlyClients,
   syncInstantlyDayStats,
   syncInstantlyDayStatsDeep,
   syncInstantlyReplies,
+  syncInstantlyRepliesBackfill,
   syncInstantlyRepliesDeep,
 } from "./instantly-jobs.ts";
 import { getSupabase } from "@/lib/supabase/server";
@@ -1996,12 +1998,18 @@ export const JOBS = {
    */
   "sync-instantly-campaigns": syncInstantlyCampaigns,
   "sync-instantly-accounts": syncInstantlyAccounts,
+  // Pure SQL + string matching, no API calls at all.
+  "sync-instantly-clients": syncInstantlyClients,
   "sync-instantly-day-stats": syncInstantlyDayStats,
   "sync-instantly-day-stats-deep": syncInstantlyDayStatsDeep,
   // Incremental off a watermark with a 48h overlap; the full walk is nightly
   // and takes about eleven minutes at the documented rate.
   "sync-instantly-replies": syncInstantlyReplies,
   "sync-instantly-replies-deep": syncInstantlyRepliesDeep,
+  // Walks oldest-ward until history is complete, then no-ops. A watermark can
+  // only move forward, so without this the 7,685 replies older than the first
+  // run's page cap would never be fetched at all.
+  "sync-instantly-replies-backfill": syncInstantlyRepliesBackfill,
 } satisfies Record<string, JobFn>;
 
 export const JOB_NAMES = Object.keys(JOBS);

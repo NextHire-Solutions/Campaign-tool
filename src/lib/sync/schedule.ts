@@ -80,6 +80,8 @@ export const SCHEDULE = [
    */
   { job: "sync-instantly-campaigns", everyMinutes: 60 },
   { job: "sync-instantly-accounts", everyMinutes: 180 },
+  // Costs nothing upstream — it only re-reads names we already hold.
+  { job: "sync-instantly-clients", everyMinutes: 60 },
   // Asks which campaigns were active in the window first, so it makes one call
   // per ACTIVE campaign (18 recently) rather than one per campaign (317).
   { job: "sync-instantly-day-stats", everyMinutes: 180 },
@@ -94,6 +96,9 @@ export const SCHEDULE = [
   // rate. Placed after every EmailBison sweep so the two never contend.
   { job: "sync-instantly-replies-deep", dailyAtUtcHour: 12 },
   { job: "sync-instantly-day-stats-deep", dailyAtUtcHour: 13 },
+  // A draining queue: ~8 minutes of real work per run while history is
+  // incomplete, then a single call that finds nothing and stops.
+  { job: "sync-instantly-replies-backfill", everyMinutes: 30 },
 ] as const satisfies readonly ScheduleEntry[];
 
 /*

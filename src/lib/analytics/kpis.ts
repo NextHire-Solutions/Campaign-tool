@@ -29,8 +29,13 @@ export interface KpiValues {
   prospects: number;
   replies: number;
   humanReplies: number;
-  positive: number;
-  bounces: number;
+  /*
+   * Nullable: Instantly can supply neither, and a 0 would read as "none" when
+   * it means "not available for the platforms in scope". Every formatter in
+   * format.ts already renders null as a dash.
+   */
+  positive: number | null;
+  bounces: number | null;
   medianReplyTime: number | null;
   medianFollowUpTime: number | null;
   replyRate: number | null;
@@ -50,6 +55,10 @@ export interface KpiResponse {
     followUpBusinessHours: string | null;
     followUpSampleSize: number | null;
     replyTimingSampleSize: number;
+    /** Which sending platforms the figures above actually describe. */
+    platforms?: string[];
+    /** False while MasterInbox labels do not reach Instantly replies. */
+    positiveCoversInstantly?: boolean;
   };
 }
 
@@ -59,8 +68,14 @@ interface RpcRow {
   prospects: number;
   replies: number;
   human_replies: number;
-  positive: number;
-  bounces: number;
+  /*
+   * Nullable because Instantly cannot supply either. MasterInbox labels decide
+   * Positive and key on EmailBison reply ids; Instantly publishes no per-day
+   * bounce figure. When Instantly is in scope both go null and reach the DOM
+   * as a dash, rather than a partial figure that would misstate the rates.
+   */
+  positive: number | null;
+  bounces: number | null;
 }
 
 function derive(
@@ -72,8 +87,16 @@ function derive(
   const sent = Number(row?.sent ?? 0);
   const replies = Number(row?.replies ?? 0);
   const humanReplies = Number(row?.human_replies ?? 0);
-  const positive = Number(row?.positive ?? 0);
-  const bounces = Number(row?.bounces ?? 0);
+  /*
+   * NULL SURVIVES. `?? 0` would turn "we do not have this" into "there were
+   * none" — and these two are exactly the metrics Instantly cannot supply:
+   * MasterInbox owns Positive and keys on EmailBison reply ids, and Instantly
+   * publishes no per-day bounce figure at all. A 0 next to 884 replies reads as
+   * a collapse in performance rather than a gap in coverage, which is the
+   * confusion rule 1 exists to prevent. The formatters render null as a dash.
+   */
+  const positive = row?.positive == null ? null : Number(row.positive);
+  const bounces = row?.bounces == null ? null : Number(row.bounces);
 
   return {
     sent,
@@ -88,9 +111,11 @@ function derive(
     medianFollowUpTime: medianFollowUp,
     replyRate: replyRate(replies, sent),
     humanRate: humanRate(humanReplies, sent),
-    positiveRate: positiveRate(positive, replies),
-    leadToEmail: leadToEmail(sent, positive),
-    bounceRate: bounceRate(bounces, sent),
+    // A rate whose numerator is unknown is unknown, not zero. Dividing null by
+    // a real reply count would print 0.0% and read as "nothing converted".
+    positiveRate: positive == null ? null : positiveRate(positive, replies),
+    leadToEmail: positive == null ? null : leadToEmail(sent, positive),
+    bounceRate: bounces == null ? null : bounceRate(bounces, sent),
   };
 }
 
@@ -222,8 +247,70 @@ export async function loadKpis(
   if (counts.error) throw new Error(`analytics_kpis: ${counts.error.message}`);
 
   const rows = (counts.data ?? []) as RpcRow[];
-  const currentRow = rows.find((r) => r.period === "current");
+  let currentRow = rows.find((r) => r.period === "current");
   const previousRow = rows.find((r) => r.period === "previous");
+
+  /*
+   * INSTANTLY, WHEN THE PLATFORM FILTER ASKS FOR IT.
+   *
+   * Instantly is the larger half of the sending — 840,416 sends against
+   * EmailBison's ~435,000 — so a band that ignores it describes under a third
+   * of the operation. But the two platforms do not answer the same questions,
+   * and pretending otherwise breaks rule 3:
+   *
+   *   Sent / Prospects / Replies / Human   both platforms report these, and
+   *                                        they add up.
+   *   POSITIVE                             MasterInbox labels decide it, and
+   *                                        they key on EmailBison reply ids.
+   *                                        No Instantly reply has one.
+   *   BOUNCES                              Instantly publishes no per-day
+   *                                        bounce figure at all — only a
+   *                                        lifetime count per campaign.
+   *
+   * So adding Instantly's replies to the numerator-less Positive would halve
+   * the Positive RATE overnight and it would look like a collapse in
+   * performance rather than a change in what is being counted. Instead those
+   * two go NULL — a dash — whenever Instantly is in scope, and `coverage` says
+   * which platforms the row actually describes.
+   */
+  const wantsInstantly =
+    filters.platforms.length > 0 && filters.platforms.includes("instantly");
+  const wantsEmailBison =
+    filters.platforms.length === 0 || filters.platforms.includes("emailbison");
+
+  let platformsCovered: string[] = wantsEmailBison ? ["emailbison"] : [];
+
+  if (wantsInstantly) {
+    const { data: inst, error: instError } = await sb.rpc("analytics_instantly_kpis", {
+      p_team_id: teamId,
+      p_from: filters.from,
+      p_to: filters.to,
+      // Instantly campaigns are UUID-keyed, so an EmailBison campaign filter
+      // cannot apply to them; a client filter can, and does.
+      p_client_ids: filters.clientIds.length ? filters.clientIds : null,
+      p_campaign_ids: null,
+    });
+    if (instError) throw new Error(`analytics_instantly_kpis: ${instError.message}`);
+
+    const i = (inst ?? [])[0] as
+      | { sent: number; prospects: number; replies: number; human_replies: number }
+      | undefined;
+
+    if (i) {
+      platformsCovered = [...platformsCovered, "instantly"];
+      const base = wantsEmailBison ? currentRow : undefined;
+      currentRow = {
+        period: "current",
+        sent: Number(base?.sent ?? 0) + Number(i.sent ?? 0),
+        prospects: Number(base?.prospects ?? 0) + Number(i.prospects ?? 0),
+        replies: Number(base?.replies ?? 0) + Number(i.replies ?? 0),
+        human_replies: Number(base?.human_replies ?? 0) + Number(i.human_replies ?? 0),
+        // Deliberately unavailable while Instantly is in scope. See above.
+        positive: null,
+        bounces: null,
+      } satisfies RpcRow;
+    }
+  }
 
   const medianReply = timing.data?.[0]?.median_reply_seconds ?? null;
   const replySamples = Number(timing.data?.[0]?.sample_size ?? 0);
@@ -241,6 +328,12 @@ export async function loadKpis(
       followUpBusinessHours: followUp.businessHours,
       followUpSampleSize: followUp.sampleSize,
       replyTimingSampleSize: replySamples,
+      /*
+       * Which platforms this row actually describes, so the band can say so
+       * rather than leaving a reader to assume it covers everything.
+       */
+      platforms: platformsCovered,
+      positiveCoversInstantly: false,
     },
   };
 

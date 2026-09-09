@@ -99,3 +99,49 @@ is 0 on every account too. Until it is understood, the sync records the raw
 status counts and NOTHING derives an "active accounts" figure from them — a
 headline of "0 active inboxes" beside 786 sends would be a confident claim the
 data next to it contradicts.
+
+## `/emails` is the whole unibox — `email_type=received` is mandatory
+
+`GET /emails` returns messages in BOTH directions. `ue_type` distinguishes them:
+
+| | |
+|---|---|
+| 1 | Sent from campaign |
+| **2** | **Received** — the only one that is a reply |
+| 3 | Sent |
+| 4 | Scheduled |
+
+Walking it unfiltered returned **14,839 outbound rows for every 137 replies**.
+Two consequences, both bad: a table named `replies` fills with sent mail, and
+the walk can never finish — 840,416 sends against 22,685 replies, at 20
+requests a minute, is days rather than minutes.
+
+**`?email_type=received` filters correctly** (verified: 100% `ue_type` 2).
+**`?ue_type=2` is silently ignored** and returns the same mixed page — a filter
+that looks like it worked because the request succeeds.
+
+## Instantly's own two totals disagree, and we follow the attributable one
+
+`GET /campaigns/analytics?start_date&end_date` (per-campaign) and
+`GET /campaigns/analytics/daily` (workspace-wide) do not agree over long
+windows:
+
+| Window | per-campaign | workspace daily | gap |
+|---|---|---|---|
+| 1–9 Sept | 1,728 | 1,728 | **0** |
+| 15 Aug – 9 Sept | 37,007 | 44,686 | 7,679 |
+| 1 Aug – 9 Sept | 71,351 | 79,031 | 7,680 |
+| 1 Jul – 9 Sept | 175,389 | 189,820 | 14,431 |
+
+The gap is zero for September and constant from mid-August back, so it is
+sends belonging to campaigns the per-campaign endpoint no longer returns —
+almost certainly deleted ones. Every campaign the API *does* list is fully
+accounted for in our tables (verified: zero campaigns with API sends and no
+rows of ours).
+
+**The dashboard follows the per-campaign figure.** It is the attributable one:
+every send can be named to a campaign and therefore to a client, which is what
+every screen here breaks down by. The workspace figure includes sends that
+cannot be attributed to anything, so adopting it would make the campaign and
+client tables fail to sum to the KPI band — the exact reconciliation the band
+depends on.

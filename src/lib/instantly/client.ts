@@ -216,10 +216,34 @@ export class InstantlyClient {
    */
   async getEmails(options: {
     since?: string;
+    /**
+     * Upper bound, for walking BACKWARDS into history.
+     *
+     * The list is newest-first, so a watermark can only ever move forward: it
+     * fetches what arrived since the last run and can never reach anything
+     * older than the first page it ever saw. Filling in history needs the other
+     * end of the range, which is what this is.
+     */
+    until?: string;
     maxPages?: number;
   } = {}): Promise<InstantlyEmail[]> {
-    const params: Record<string, string> = {};
+    /*
+     * `email_type=received` IS LOAD-BEARING, not an optimisation.
+     *
+     * /emails is the whole unibox — every message, in both directions. Walking
+     * it unfiltered returned 14,839 outbound campaign sends for every 137 real
+     * replies, so a table called `replies` filled up with sent mail and the
+     * walk could never finish: the workspace has 840,416 sends against 22,685
+     * replies, and at 20 requests a minute that is days rather than minutes.
+     *
+     * The `ue_type` query parameter looks like it would do the same job and is
+     * silently IGNORED — `?ue_type=2` returns the same mixed page. Only
+     * `email_type=received` filters, and it returns 100% ue_type 2. Verified
+     * both ways.
+     */
+    const params: Record<string, string> = { email_type: "received" };
     if (options.since) params.min_timestamp_created = options.since;
+    if (options.until) params.max_timestamp_created = options.until;
     return this.walk<InstantlyEmail>("/emails", params, options.maxPages ?? 500);
   }
 }
