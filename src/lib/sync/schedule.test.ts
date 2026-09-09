@@ -34,10 +34,20 @@ describe("sync schedule", () => {
      * this into a chore — adding an hourly job failed it without anything being
      * wrong — while asserting the RULE still catches a genuine cadence bug.
      * 14:00 is minute-of-day 840: divisible by 10, 30 and 60, not by 180.
+     *
+     * NIGHTLY JOBS AT THIS HOUR COUNT TOO. Deriving only from `everyMinutes`
+     * quietly assumed nothing daily was scheduled at 14:00, so the first job
+     * placed there failed this test with nothing wrong — the same chore the
+     * comment above says was designed out, reintroduced through the other
+     * cadence.
      */
     const minuteOfDay = 14 * 60;
     const expected = entries
-      .filter((e) => e.everyMinutes && minuteOfDay % e.everyMinutes === 0)
+      .filter(
+        (e) =>
+          (e.everyMinutes && minuteOfDay % e.everyMinutes === 0) ||
+          e.dailyAtUtcHour === 14,
+      )
       .map((e) => e.job)
       .sort();
 
