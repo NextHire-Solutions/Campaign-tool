@@ -107,9 +107,17 @@ function KpiCell({
 export function KpiBand({
   cells,
   loading,
+  scope,
 }: {
   cells: KpiCellData[];
   loading?: boolean;
+  /**
+   * Which platforms these twelve figures describe, when it is not all of them.
+   *
+   * Undefined for the whole estate — a caption on every view would be noise,
+   * and the one that matters is the narrowed case.
+   */
+  scope?: string;
 }) {
   const byKey = new Map(cells.map((cell) => [cell.key, cell]));
 
@@ -136,6 +144,11 @@ export function KpiBand({
       <div className="grid grid-cols-2 divide-x divide-[--hairline] border-t border-[--hairline] sm:grid-cols-3 lg:grid-cols-6">
         {render(KPI_ROW_2)}
       </div>
+      {scope ? (
+        <p className="border-t border-[--hairline] px-4 py-1 text-[11px] text-muted-foreground">
+          {scope}
+        </p>
+      ) : null}
     </div>
   );
 }

@@ -45,12 +45,21 @@ interface Response {
   total: number;
   days: number;
   group: "client" | "campaign";
+  /** Which platforms these figures describe — set by the filter bar. */
+  platforms: string[];
 }
 
 const PLATFORM_LABEL: Record<string, string> = {
   emailbison: "EmailBison",
   instantly: "Instantly",
 };
+
+/** "both platforms" / "EmailBison only" — never a bare total with no scope. */
+function scopeLabel(platforms: string[] | undefined): string {
+  const list = platforms ?? [];
+  if (list.length !== 1) return "both platforms";
+  return `${PLATFORM_LABEL[list[0]] ?? list[0]} only`;
+}
 
 export function VolumeView() {
   const { toQueryString } = useAnalyticsFilters();
@@ -144,8 +153,14 @@ export function VolumeView() {
                 <Loader2 className="ml-2 inline size-3 animate-spin text-muted-foreground" />
               ) : null}
             </h2>
+            {/*
+              The scope is NAMED rather than assumed. This said "both platforms"
+              unconditionally, which was true only until the platform filter
+              could reach this tab — a filtered total labelled as covering both
+              is a wrong number wearing a confident caption.
+            */}
             <p className="tnum mt-0.5 text-xs text-muted-foreground">
-              {fullNumber(data?.total)} sent in range · both platforms
+              {fullNumber(data?.total)} sent in range · {scopeLabel(data?.platforms)}
             </p>
           </div>
           <div className="flex items-center gap-1 rounded-lg bg-muted p-0.5">

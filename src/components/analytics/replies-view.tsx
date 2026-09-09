@@ -499,8 +499,22 @@ function ReplyList({
 /* ---------- the view ---------------------------------------------------- */
 
 export function RepliesView() {
-  const { toQueryString } = useAnalyticsFilters();
+  const { filters, toQueryString } = useAnalyticsFilters();
   const queryString = toQueryString();
+
+  /*
+   * Reply DETAIL is EmailBison-only, and this view says so rather than letting
+   * the omission pass as an empty result.
+   *
+   * The KPI band above already counts Instantly's replies — it reads them from
+   * the day stats, which are per-campaign totals. These cards need the reply
+   * ROW: who sent it, from where, at what sales volume. That is a different
+   * ingestion (Instantly's /emails, rate-capped at 20/min) and is not synced
+   * yet, so with Instantly in scope the band's reply count and these cards
+   * legitimately describe different populations. Unlabelled, that reads as a
+   * bug in the cards.
+   */
+  const instantlyInScope = filters.platforms.includes("instantly");
 
   const [positiveOnly, setPositiveOnly] = useState(false);
   const [drill, setDrill] = useState<{ dimension: string; value: string } | null>(null);
@@ -542,6 +556,14 @@ export function RepliesView() {
 
   return (
     <div className="space-y-4 bg-muted/30 p-3 sm:p-4 lg:p-6">
+      {instantlyInScope ? (
+        <p className="rounded-lg border border-amber-300/60 bg-amber-50 px-3 py-2 text-xs text-amber-900">
+          Reply breakdowns cover <strong>EmailBison only</strong>. Instantly&rsquo;s reply
+          counts appear in the KPI band above, but the per-reply detail these cards
+          need is not synced from Instantly yet.
+        </p>
+      ) : null}
+
       <div className="flex flex-wrap items-center justify-between gap-3">
         {/*
           One toggle, every chart. §5.5: "the fastest way to see whether a

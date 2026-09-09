@@ -43,7 +43,30 @@ interface KpiResponse {
     followUpBusinessHours: string | null;
     followUpSampleSize: number | null;
     replyTimingSampleSize: number;
+    /**
+     * Which platforms the figures above actually describe.
+     *
+     * The route has always sent this; nothing read it, so the band showed a
+     * scope it never named. That was survivable while the platform filter was
+     * unreachable from this tab and the answer was always EmailBison — it stops
+     * being survivable now that it can be changed.
+     */
+    platforms?: string[];
+    /** False when Positive omits Instantly — which is why it reads as a dash. */
+    positiveCoversInstantly?: boolean;
   };
+}
+
+const PLATFORM_LABEL: Record<string, string> = {
+  emailbison: "EmailBison",
+  instantly: "Instantly",
+};
+
+function scopeNote(platforms: string[] | undefined): string | undefined {
+  // One platform is the case worth calling out. Both, or unknown, is the
+  // whole estate and needs no caveat.
+  if (!platforms || platforms.length !== 1) return undefined;
+  return `${PLATFORM_LABEL[platforms[0]] ?? platforms[0]} only`;
 }
 
 /**
@@ -98,13 +121,29 @@ export function useKpis() {
 
   const c = data?.current;
 
+  const scope = scopeNote(data?.coverage.platforms);
+
+  /*
+   * Why Positive is a dash, said on the tile rather than left to be discovered.
+   *
+   * Positive is decided by MasterInbox labels, which key on EmailBison reply
+   * ids — no Instantly reply has one. So with Instantly in scope the honest
+   * answer is "not available", and rule 1 renders that as DASH. An unexplained
+   * dash beside eleven populated tiles reads as a broken metric; this names it
+   * as a coverage limit, which is what it is.
+   */
+  const positiveNote =
+    data && data.coverage.positiveCoversInstantly === false
+      ? "EmailBison only"
+      : scope;
+
   const cells: KpiCellData[] = c
     ? [
         cell("sent", "Sent", compactNumber(c.sent)),
         cell("prospects", "Prospects", compactNumber(c.prospects)),
         cell("replies", "Replies", compactNumber(c.replies)),
         cell("humanReplies", "Human Replies", compactNumber(c.humanReplies)),
-        cell("positive", "Positive", compactNumber(c.positive)),
+        cell("positive", "Positive", compactNumber(c.positive), positiveNote),
         cell("bounces", "Bounces", compactNumber(c.bounces)),
         cell(
           "medianReplyTime",
@@ -125,10 +164,16 @@ export function useKpis() {
         ),
         cell("replyRate", "Reply Rate", percent(c.replyRate)),
         cell("humanRate", "Human Rate", percent(c.humanRate)),
-        cell("positiveRate", "Positive Rate", percent(c.positiveRate)),
-        cell("leadToEmail", "Lead to Email", ratio(c.leadToEmail)),
+        cell("positiveRate", "Positive Rate", percent(c.positiveRate), positiveNote),
+        cell("leadToEmail", "Lead to Email", ratio(c.leadToEmail), positiveNote),
       ]
     : [];
 
-  return { cells, isLoading: query.isLoading, error: query.error };
+  /*
+   * The band-wide scope is returned ONCE, not stamped onto twelve tiles.
+   * "EmailBison only" repeated a dozen times is noise that trains the eye to
+   * skip exactly the caveat it is there to deliver; the per-tile note stays for
+   * the metrics whose coverage differs from the band's.
+   */
+  return { cells, scope, isLoading: query.isLoading, error: query.error };
 }

@@ -95,7 +95,23 @@ export function FilterBar() {
    */
   const tab = pathname?.split("/")[2] ?? "campaign";
   const supportsCompare = tab === "campaign";
-  const supportsPlatform = tab === "attribution";
+
+  /*
+   * Platform, on every tab whose numbers actually change with it.
+   *
+   * This read `tab === "attribution"` for as long as Attribution was the only
+   * place Instantly existed. That stopped being true when Instantly was synced
+   * into the KPI band, the chart, the Clients and Campaigns tables and the
+   * Volume split — the API routes have honoured `platforms` on all of them
+   * since, so the filter WAS live and simply had no control to set it. A
+   * working filter with no way to reach it is the same as a missing feature.
+   *
+   * Still absent from Copy & Offer, and that one is not an oversight: it reads
+   * sequence copy and spintax, which only EmailBison exposes. Infrastructure
+   * has no bar at all — it carries its own estate switch, because a Bison inbox
+   * and an Instantly account do not share a column layout.
+   */
+  const supportsPlatform = tab === "attribution" || tab === "campaign" || tab === "volume";
 
   const { data: options } = useQuery<{ campaigns: Option[]; clients: Option[] }>({
     queryKey: ["filter-options"],
@@ -150,15 +166,9 @@ export function FilterBar() {
       />
 
       {/*
-        Platform (WT §3), on the Attribution tab only.
-    
-        It is real, not cosmetic — the outcomes feed genuinely carries both
-        EmailBison and Instantly, and roughly 670 of the outcomes on that feed
-        are Instantly's. But it is the ONLY thing in the product that is: every
-        send, reply, sequence and inbox here comes from EmailBison, so on any
-        other tab there is no Instantly data for the control to reveal or
-        withhold. Shown there, it was a dropdown you could set and watch change
-        nothing, which reads as a broken filter rather than an absent one.
+        Platform (WT §3). Clearing it means "both", never "neither" — an empty
+        selection is the same request as ticking both boxes, which is why the
+        routes send NULL for it rather than an empty array.
       */}
       {supportsPlatform ? (
         <MultiSelect

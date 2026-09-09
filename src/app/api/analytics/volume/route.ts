@@ -1,6 +1,6 @@
 import { NextResponse, type NextRequest } from "next/server";
 import { getSupabase } from "@/lib/supabase/server";
-import { resolveFilters, toISODate } from "@/lib/analytics/query-params.ts";
+import { PLATFORMS, resolveFilters, toISODate } from "@/lib/analytics/query-params.ts";
 
 /*
  * Sending capacity, and where the volume actually went.
@@ -31,9 +31,24 @@ export async function GET(request: NextRequest) {
     ? "campaign"
     : "client";
 
+  /*
+   * An empty selection means "everything", which is why this is NULL rather
+   * than the full list. They return identical numbers (080 guarantees it), but
+   * NULL lets the query planner skip the branch entirely instead of scanning
+   * and discarding.
+   *
+   * CAPACITY IS FILTERED TOO, even though it is not date-filtered. The tile
+   * reads capacity and volume as a ratio, so scoping only the volume half would
+   * show Instantly's sending against the whole estate's capacity.
+   */
+  const platforms = filters.platforms.length ? filters.platforms : null;
+
   const sb = getSupabase();
   const [capacity, split] = await Promise.all([
-    sb.rpc("analytics_sending_capacity", { p_team_id: TEAM_ID() }),
+    sb.rpc("analytics_sending_capacity", {
+      p_team_id: TEAM_ID(),
+      p_platforms: platforms,
+    }),
     sb.rpc("analytics_volume_split", {
       p_team_id: TEAM_ID(),
       p_from: filters.from,
@@ -43,6 +58,7 @@ export async function GET(request: NextRequest) {
       // 25 bars is already more than anyone reads down; the grand total on
       // every row means the share stays correct despite the truncation.
       p_limit: 25,
+      p_platforms: platforms,
     }),
   ]);
 
@@ -75,6 +91,9 @@ export async function GET(request: NextRequest) {
     total: Number(rows[0]?.grand_total ?? 0),
     days,
     group,
+    // Which platforms these figures describe, so the tile can say so rather
+    // than claiming "both platforms" over a filtered total.
+    platforms: platforms ?? [...PLATFORMS],
     range: { from: filters.from, to: filters.to },
   });
 }

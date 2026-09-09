@@ -30,11 +30,11 @@ const SUB_VIEW_OPTIONS: Array<{ value: SubView; label: string }> = [
 
 export function CampaignTab() {
   const { filters, setFilters } = useAnalyticsFilters();
-  const { cells, isLoading } = useKpis();
+  const { cells, scope, isLoading } = useKpis();
 
   return (
     <>
-      <KpiBand cells={cells} loading={isLoading} />
+      <KpiBand cells={cells} scope={scope} loading={isLoading} />
 
       <div className="border-b px-4">
         <Segmented
