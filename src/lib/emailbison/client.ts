@@ -402,6 +402,20 @@ export class EmailBisonClient {
     return Number(response?.meta?.total ?? 0);
   }
 
+  /**
+   * How many inboxes a campaign has, in ONE call.
+   *
+   * The full list is ~45 pages and 12.6 seconds; this is one page and 0.76,
+   * because the count rides on `meta.total`. Used to put the headline number on
+   * screen while the walk that produces the list is still running.
+   */
+  async getCampaignSenderEmailCount(campaignId: number): Promise<number> {
+    const response = await this.request<{ meta?: { total?: number } }>(
+      `/api/campaigns/${campaignId}/sender-emails?page=1`,
+    );
+    return Number(response?.meta?.total ?? 0);
+  }
+
   /** The inboxes currently sending for a campaign, all pages. */
   async getCampaignSenderEmails(campaignId: number) {
     return this.fetchAllPages<EBSenderEmail>(

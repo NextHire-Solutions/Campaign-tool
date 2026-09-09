@@ -106,7 +106,24 @@ export function AssignInboxesDialog({
    * campaign — across a bulk selection there is no single answer, and showing
    * the first one's inboxes would be worse than showing none.
    */
-  const { data: assigned } = useQuery<Assigned>({
+  /*
+   * The count first, separately, because it is one API call against the full
+   * answer's forty-five. 0.76s versus 12.6 — so the headline number lands
+   * almost at once and the detail catches up, rather than the whole bar sitting
+   * blank for twelve seconds while a reader wonders whether it is broken.
+   */
+  const { data: quick } = useQuery<{ total: number }>({
+    queryKey: ["campaign-inbox-count", campaignIds[0]],
+    queryFn: async () => {
+      const response = await fetch(`/api/campaigns/${campaignIds[0]}/inboxes?summary=1`);
+      if (!response.ok) throw new Error("Could not count the current inboxes");
+      return response.json();
+    },
+    enabled: open && campaignIds.length === 1,
+    staleTime: 60_000,
+  });
+
+  const { data: assigned, isLoading: assignedLoading } = useQuery<Assigned>({
     queryKey: ["campaign-inboxes", campaignIds[0]],
     queryFn: async () => {
       const response = await fetch(`/api/campaigns/${campaignIds[0]}/inboxes`);
@@ -233,15 +250,33 @@ export function AssignInboxesDialog({
                     ))}
                   </div>
 
-                  {campaignIds.length === 1 && assigned ? (
+                  {/*
+                    A LOADING STATE, not an empty gap.
+                    
+                    This reads the campaign's inboxes live from EmailBison —
+                    ~45 pages for a large campaign, several seconds — because
+                    nothing here stores campaign-to-inbox membership. Until it
+                    lands the bar was simply absent, so the dialog looked
+                    finished and then visibly changed under the cursor. Saying
+                    what is being waited for is the difference between "slow"
+                    and "broken".
+                  */}
+                  {/*
+                    Progressive: the count as soon as it exists, the detail when
+                    the walk finishes. Two states rather than one long blank —
+                    a bar that is present and filling in reads as loading, a bar
+                    that is absent reads as finished.
+                  */}
+                  {campaignIds.length === 1 && (quick || assigned) ? (
                     <div className="rounded-md border bg-muted/30 p-2.5 text-xs">
                       <div className="flex flex-wrap items-baseline justify-between gap-2">
                         <p className="tnum">
                           <strong className="font-medium text-foreground">
-                            {fullNumber(assigned.total)}
+                            {fullNumber(assigned?.total ?? quick?.total)}
                           </strong>{" "}
-                          inbox{assigned.total === 1 ? "" : "es"} currently assigned
-                          {assigned.connected !== assigned.total ? (
+                          inbox{(assigned?.total ?? quick?.total) === 1 ? "" : "es"} currently
+                          assigned
+                          {assigned && assigned.connected !== assigned.total ? (
                             <span className="text-[#b02525]">
                               {" "}
                               · {fullNumber(assigned.total - assigned.connected)} of them cannot
@@ -249,17 +284,24 @@ export function AssignInboxesDialog({
                             </span>
                           ) : null}
                         </p>
-                        <button
-                          type="button"
-                          onClick={() =>
-                            setShowing(showing === "assigned" ? "pools" : "assigned")
-                          }
-                          className="shrink-0 underline underline-offset-2 hover:text-foreground"
-                        >
-                          {showing === "assigned" ? "Back to pools" : "See which ones"}
-                        </button>
+                        {assigned ? (
+                          <button
+                            type="button"
+                            onClick={() =>
+                              setShowing(showing === "assigned" ? "pools" : "assigned")
+                            }
+                            className="shrink-0 underline underline-offset-2 hover:text-foreground"
+                          >
+                            {showing === "assigned" ? "Back to pools" : "See which ones"}
+                          </button>
+                        ) : (
+                          <span className="flex shrink-0 items-center gap-1.5 text-muted-foreground">
+                            <Loader2 className="size-3 animate-spin" />
+                            loading the list…
+                          </span>
+                        )}
                       </div>
-                      {assigned.tags.length && showing === "pools" ? (
+                      {assigned?.tags.length && showing === "pools" ? (
                         <p className="tnum mt-1 text-muted-foreground">
                           {assigned.tags
                             .slice(0, 4)
@@ -267,6 +309,11 @@ export function AssignInboxesDialog({
                             .join(" · ")}
                         </p>
                       ) : null}
+                    </div>
+                  ) : campaignIds.length === 1 && assignedLoading ? (
+                    <div className="flex items-center gap-2 rounded-md border bg-muted/30 p-2.5 text-xs text-muted-foreground">
+                      <Loader2 className="size-3.5 shrink-0 animate-spin" />
+                      <span>Checking which inboxes are already on this campaign…</span>
                     </div>
                   ) : null}
 
@@ -349,6 +396,9 @@ export function AssignInboxesDialog({
                             so "assign" and "re-assign what is already there" are
                             distinguishable before the click rather than after.
                           */}
+                          {!assigned && assignedLoading ? (
+                            <Loader2 className="size-3 shrink-0 animate-spin text-muted-foreground/60" />
+                          ) : null}
                           {alreadyOn.has(t.tag) ? (
                             <span className="tnum shrink-0 rounded bg-emerald-100 px-1 text-[10px] font-medium text-emerald-800">
                               {fullNumber(alreadyOn.get(t.tag))} on
