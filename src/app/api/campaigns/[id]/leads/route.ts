@@ -17,6 +17,10 @@ import { getSupabase } from "@/lib/supabase/server";
 export const dynamic = "force-dynamic";
 
 const PAGE_SIZE = 50;
+
+/** Keeps null as null; only real values become numbers. */
+const nullableNumber = (v: unknown): number | null =>
+  v === null || v === undefined ? null : Number(v);
 const TEAM_ID = () => Number(process.env.EMAILBISON_TEAM_ID || 2);
 
 export async function GET(
@@ -141,12 +145,20 @@ export async function GET(
       leadStatus: r.lead_status,
       status: r.status,
       stepReached: r.step_reached,
-      sends: Number(r.sends),
+      /*
+       * NULL SURVIVES AS NULL. `Number(null)` is 0, and these columns are
+       * deliberately null for a lead we know was contacted but hold no send row
+       * for — someone who bounced, where EmailBison keeps no `sent` record
+       * (072). Coercing that to 0 would put "never emailed" on screen next to a
+       * bounce, which is the exact confusion rule 1 exists to prevent. The
+       * formatters already render null as a dash.
+       */
+      sends: nullableNumber(r.sends),
       firstSentAt: r.first_sent_at,
       lastSentAt: r.last_sent_at,
-      opens: Number(r.opens),
-      uniqueOpens: Number(r.unique_opens),
-      clicks: Number(r.clicks),
+      opens: nullableNumber(r.opens),
+      uniqueOpens: nullableNumber(r.unique_opens),
+      clicks: nullableNumber(r.clicks),
       replies: Number(r.replies),
       positive: Number(r.positive),
       bounces: Number(r.bounces),

@@ -68,6 +68,32 @@ export const SCHEDULE = [
   { job: "sync-esp-domains", everyMinutes: 60 },
   { job: "sync-campaign-leads", everyMinutes: 180 },
   { job: "sync-campaign-leads-deep", dailyAtUtcHour: 11 },
+
+  /*
+   * Instantly. Its own tables, its own cadences, and one limit that dictates
+   * all of them: /emails allows 20 requests a minute where every other
+   * Instantly endpoint gets 6,000.
+   *
+   * Campaigns and accounts are almost free — Instantly returns EVERY
+   * campaign's metrics in a single call, so the whole campaign sync is about
+   * five requests against EmailBison's ninety-odd.
+   */
+  { job: "sync-instantly-campaigns", everyMinutes: 60 },
+  { job: "sync-instantly-accounts", everyMinutes: 180 },
+  // Asks which campaigns were active in the window first, so it makes one call
+  // per ACTIVE campaign (18 recently) rather than one per campaign (317).
+  { job: "sync-instantly-day-stats", everyMinutes: 180 },
+  /*
+   * Replies incrementally, off a watermark with a 48h overlap. Kept to 30
+   * minutes rather than 10 like sync-replies: at 20 requests a minute a run
+   * that needs several pages takes real time, and two overlapping runs would
+   * spend the same tiny budget twice.
+   */
+  { job: "sync-instantly-replies", everyMinutes: 30 },
+  // The nightly full walk: ~227 pages, about eleven minutes at the documented
+  // rate. Placed after every EmailBison sweep so the two never contend.
+  { job: "sync-instantly-replies-deep", dailyAtUtcHour: 12 },
+  { job: "sync-instantly-day-stats-deep", dailyAtUtcHour: 13 },
 ] as const satisfies readonly ScheduleEntry[];
 
 /*

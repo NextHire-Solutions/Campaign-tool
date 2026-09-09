@@ -21,6 +21,14 @@ const NUMERIC_LEAD_ATTRIBUTES = new Set([
 ]);
 import { dedupeBy } from "./dedupe.ts";
 import { vendorFromTags } from "./vendor.ts";
+import {
+  syncInstantlyAccounts,
+  syncInstantlyCampaigns,
+  syncInstantlyDayStats,
+  syncInstantlyDayStatsDeep,
+  syncInstantlyReplies,
+  syncInstantlyRepliesDeep,
+} from "./instantly-jobs.ts";
 import { getSupabase } from "@/lib/supabase/server";
 import { exclusionReason, matchCampaign } from "@/lib/clients/match.ts";
 import type { JobFn, JobResult } from "./runner";
@@ -51,7 +59,7 @@ async function pool<T>(items: T[], limit: number, worker: (item: T) => Promise<v
   );
 }
 
-async function chunkUpsert(
+export async function chunkUpsert(
   table: string,
   rows: Record<string, unknown>[],
   onConflict: string,
@@ -1768,6 +1776,37 @@ export function makeCampaignLeadsJob(windowDays: number | null, pageBudget: numb
       }
     });
 
+    /*
+     * Also refresh campaigns that have had a REPLY recently, not only ones with
+     * new sends.
+     *
+     * Membership now counts a reply or bounce as proof of contact (072),
+     * because EmailBison keeps no `sent` row for most hard bounces — 5,340 of
+     * 5,860 bounced pairs had none. But this job's `touched` set is built from
+     * sends alone, so a lead that bounces in a campaign which sent nothing new
+     * would never be picked up, and the Leads tab would drift back towards the
+     * undercount 072 just fixed.
+     *
+     * The window matches the sends window, so a paused campaign that is still
+     * receiving late bounces stays current.
+     */
+    // Falls back to a week when the job is running unbounded (the backfill),
+    // because "every campaign that ever had a reply" is what 072 already did
+    // once and does not need repeating on every run.
+    const replyWindowFrom = new Date(Date.now() - (windowDays ?? 7) * 86_400_000)
+      .toISOString()
+      .slice(0, 10);
+    const { data: repliedIn } = await sb
+      .from("replies")
+      .select("campaign_id")
+      .eq("team_id", teamId)
+      .gte("received_date", replyWindowFrom)
+      .not("campaign_id", "is", null)
+      .limit(1000);
+    for (const row of (repliedIn ?? []) as Array<{ campaign_id: number }>) {
+      touched.add(row.campaign_id);
+    }
+
     if (touched.size) {
       const { error } = await sb.rpc("refresh_campaign_leads", {
         p_team_id: teamId,
@@ -1945,6 +1984,24 @@ export const JOBS = {
   // The wide window exists to re-read opens and clicks that accrued after the
   // send — the thing a summed rollup could never have picked up.
   "sync-campaign-leads-deep": makeCampaignLeadsJob(7, 3000),
+
+  /*
+   * Instantly. A second sending platform, in its own tables (070) so nothing
+   * above can be disturbed by it.
+   *
+   * The cadences are set by ONE limit: /emails allows 20 requests a minute
+   * against ~227 pages of replies. Everything else on Instantly has a
+   * 6,000/min budget and is cheap — the whole campaign sync is five calls,
+   * because Instantly returns every campaign's metrics at once.
+   */
+  "sync-instantly-campaigns": syncInstantlyCampaigns,
+  "sync-instantly-accounts": syncInstantlyAccounts,
+  "sync-instantly-day-stats": syncInstantlyDayStats,
+  "sync-instantly-day-stats-deep": syncInstantlyDayStatsDeep,
+  // Incremental off a watermark with a 48h overlap; the full walk is nightly
+  // and takes about eleven minutes at the documented rate.
+  "sync-instantly-replies": syncInstantlyReplies,
+  "sync-instantly-replies-deep": syncInstantlyRepliesDeep,
 } satisfies Record<string, JobFn>;
 
 export const JOB_NAMES = Object.keys(JOBS);

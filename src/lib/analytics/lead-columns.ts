@@ -31,12 +31,13 @@ export interface LeadRow {
   leadStatus: string | null;
   status: string;
   stepReached: number | null;
-  sends: number;
+  /** Null when the lead is known contacted but no send row survives (072). */
+  sends: number | null;
   firstSentAt: string | null;
   lastSentAt: string | null;
-  opens: number;
-  uniqueOpens: number;
-  clicks: number;
+  opens: number | null;
+  uniqueOpens: number | null;
+  clicks: number | null;
   replies: number;
   positive: number;
   bounces: number;
