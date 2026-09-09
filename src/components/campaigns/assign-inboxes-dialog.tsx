@@ -124,6 +124,20 @@ export function AssignInboxesDialog({
   const willSend = chosen ? (action === "attach" ? chosen.connected : chosen.inboxes) : 0;
   const dead = chosen ? chosen.inboxes - chosen.connected : 0;
 
+  /*
+   * How many of this pool are ALREADY on the campaign, and therefore how many
+   * would genuinely change.
+   *
+   * The warning used to read "531 inboxes will start sending" when 346 of them
+   * were already sending — true of the end state, false about the change, and
+   * the number a reader takes away is the change. Only meaningful for a single
+   * campaign; across a bulk selection each one has its own overlap and there is
+   * no single figure.
+   */
+  const single = campaignIds.length === 1;
+  const onAlready = single ? Math.min(alreadyOn.get(tag) ?? 0, willSend) : 0;
+  const newlyAdded = Math.max(willSend - onAlready, 0);
+
   const run = async () => {
     setRunning(true);
     setError(null);
@@ -359,11 +373,39 @@ export function AssignInboxesDialog({
                       <span className="tnum">
                         {action === "attach" ? (
                           <>
-                            <strong className="font-medium">
-                              {fullNumber(willSend)} inboxes
-                            </strong>{" "}
-                            will start sending for {fullNumber(campaignIds.length)}{" "}
-                            campaign{campaignIds.length === 1 ? "" : "s"}.
+                            {single && newlyAdded === 0 && onAlready > 0 ? (
+                              <>
+                                {/*
+                                  Nothing to do. The attach would succeed and
+                                  change nothing, and a button reading "Assign 0"
+                                  invites a click that reports success for a
+                                  no-op.
+                                */}
+                                All {fullNumber(onAlready)} connected{" "}
+                                {chosen?.tag} inboxes are already on this campaign.
+                                Nothing to add.
+                              </>
+                            ) : single && onAlready > 0 ? (
+                              <>
+                                <strong className="font-medium">
+                                  {fullNumber(newlyAdded)}{" "}
+                                  {newlyAdded === 1 ? "inbox" : "inboxes"}
+                                </strong>{" "}
+                                will start sending.{" "}
+                                {fullNumber(onAlready)} of this pool{" "}
+                                {onAlready === 1 ? "is" : "are"} already on the campaign, so
+                                it will hold {fullNumber(willSend)} from{" "}
+                                {chosen?.tag} afterwards.
+                              </>
+                            ) : (
+                              <>
+                                <strong className="font-medium">
+                                  {fullNumber(willSend)} inboxes
+                                </strong>{" "}
+                                will start sending for {fullNumber(campaignIds.length)}{" "}
+                                campaign{campaignIds.length === 1 ? "" : "s"}.
+                              </>
+                            )}
                             {dead > 0 ? (
                               <>
                                 {" "}
@@ -405,10 +447,22 @@ export function AssignInboxesDialog({
               <Button variant="outline" onClick={close} disabled={running}>
                 Cancel
               </Button>
-              <Button onClick={run} disabled={running || !tag || willSend === 0}>
+              <Button
+                onClick={run}
+                disabled={
+                  running ||
+                  !tag ||
+                  willSend === 0 ||
+                  // Nothing would change: every connected inbox in this pool is
+                  // already on the campaign.
+                  (action === "attach" && single && newlyAdded === 0)
+                }
+              >
                 {running ? <Loader2 className="mr-1.5 size-3.5 animate-spin" /> : null}
                 {action === "attach" ? "Assign" : "Remove"}
-                {chosen ? ` ${fullNumber(willSend)}` : ""}
+                {chosen
+                  ? ` ${fullNumber(action === "attach" && single && onAlready > 0 ? newlyAdded : willSend)}`
+                  : ""}
               </Button>
             </>
           )}
