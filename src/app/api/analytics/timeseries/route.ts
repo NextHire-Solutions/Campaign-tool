@@ -72,7 +72,79 @@ export async function GET(request: NextRequest) {
       bounces: Number(r.bounces),
     });
 
-    const points = rows.filter((r) => r.period === "current").map(shape);
+    let points = rows.filter((r) => r.period === "current").map(shape);
+
+    /*
+     * INSTANTLY, added day by day when the platform filter asks for it.
+     *
+     * Merged into the SAME points rather than drawn as extra series: the chart's
+     * lines are metrics (Sent, Replies, …), not platforms, and adding
+     * "Sent (Instantly)" would double the legend and make the two impossible to
+     * read against each other. A day the two platforms share becomes one point
+     * whose Sent is the sum, which is what "Sent" means once both are in scope.
+     *
+     * POSITIVE IS LEFT AS THE EMAILBISON FIGURE and the KPI band above already
+     * dashes it in this mode — MasterInbox owns Positive and has no labels for
+     * Instantly, so there is nothing to add. It is not summed, so it cannot
+     * silently claim to cover both.
+     */
+    const wantsInstantly = filters.platforms.includes("instantly");
+    const wantsEmailBison =
+      filters.platforms.length === 0 || filters.platforms.includes("emailbison");
+
+    if (wantsInstantly) {
+      const { data: inst, error: instError } = await getSupabase().rpc(
+        "analytics_instantly_timeseries",
+        {
+          p_team_id: teamId,
+          p_from: filters.from,
+          p_to: filters.to,
+          p_client_ids: filters.clientIds.length ? filters.clientIds : null,
+          p_campaign_ids: null,
+        },
+      );
+      if (instError) throw new Error(instError.message);
+
+      const byDay = new Map(points.map((p) => [p.date, p]));
+      if (!wantsEmailBison) {
+        // Instantly alone: every EmailBison point must go, or the chart would
+        // show one platform's line labelled as the other's.
+        for (const p of byDay.values()) {
+          p.sent = 0; p.prospects = 0; p.replies = 0; p.human = 0; p.bounces = 0;
+        }
+      }
+
+      for (const r of (inst ?? []) as Array<Record<string, unknown>>) {
+        const day = String(r.day);
+        const existing = byDay.get(day);
+        const add = {
+          sent: Number(r.sent ?? 0),
+          prospects: Number(r.prospects ?? 0),
+          replies: Number(r.replies ?? 0),
+          human: Number(r.human_replies ?? 0),
+        };
+        if (existing) {
+          existing.sent += add.sent;
+          existing.prospects += add.prospects;
+          existing.replies += add.replies;
+          existing.human += add.human;
+        } else {
+          // A day Instantly sent on and EmailBison did not. Positive stays 0
+          // rather than null because this shape is numeric throughout; the band
+          // is where the coverage caveat lives.
+          byDay.set(day, {
+            date: day,
+            sent: add.sent,
+            prospects: add.prospects,
+            replies: add.replies,
+            human: add.human,
+            positive: 0,
+            bounces: 0,
+          });
+        }
+      }
+      points = [...byDay.values()].sort((a, b) => a.date.localeCompare(b.date));
+    }
 
     return NextResponse.json({
       points,

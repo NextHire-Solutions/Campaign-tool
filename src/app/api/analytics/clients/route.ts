@@ -75,13 +75,104 @@ export async function GET(request: NextRequest) {
       };
     });
 
+    /*
+     * INSTANTLY, folded into the SAME client rows.
+     *
+     * Merged rather than appended, unlike the campaigns table: a client is one
+     * client on both platforms, and giving "Douglas Elliman NYC" two rows would
+     * make the table read as two clients and break the footer's reconciliation
+     * with the KPI band.
+     *
+     * POSITIVE STAYS THE EMAILBISON FIGURE and is therefore NOT re-derived into
+     * positiveRate once Instantly replies join the denominator — that would
+     * halve every rate. The rate goes null instead, and the band above already
+     * dashes Positive in this mode for the same reason.
+     */
+    const wantsInstantly = filters.platforms.includes("instantly");
+    const wantsEmailBison =
+      filters.platforms.length === 0 || filters.platforms.includes("emailbison");
+
+    let merged = wantsEmailBison ? rows : [];
+
+    if (wantsInstantly) {
+      const { data: inst, error: instError } = await getSupabase().rpc(
+        "analytics_instantly_client_rows",
+        {
+          p_team_id: teamId,
+          p_from: filters.from,
+          p_to: filters.to,
+          p_client_ids: filters.clientIds.length ? filters.clientIds : null,
+        },
+      );
+      if (instError) throw new Error(instError.message);
+
+      const byId = new Map(merged.map((r) => [r.clientId ?? r.name, r]));
+
+      for (const r of (inst ?? []) as Array<Record<string, unknown>>) {
+        const key = (r.client_id as string | null) ?? String(r.client_name);
+        const add = {
+          sent: Number(r.sent ?? 0),
+          prospects: Number(r.prospects ?? 0),
+          replies: Number(r.replies ?? 0),
+          humanReplies: Number(r.human_replies ?? 0),
+          bounces: r.bounces === null ? 0 : Number(r.bounces),
+          campaigns: Number(r.campaigns ?? 0),
+        };
+        const existing = byId.get(key);
+        if (existing) {
+          existing.sent += add.sent;
+          existing.prospects += add.prospects;
+          existing.replies += add.replies;
+          existing.humanReplies += add.humanReplies;
+          existing.bounces += add.bounces;
+          existing.campaignCount += add.campaigns;
+        } else {
+          byId.set(key, {
+            clientId: (r.client_id as string | null) ?? null,
+            name: String(r.client_name),
+            campaignCount: add.campaigns,
+            ambiguousCount: 0,
+            sent: add.sent,
+            prospects: add.prospects,
+            replies: add.replies,
+            humanReplies: add.humanReplies,
+            positive: 0,
+            bounces: add.bounces,
+            replyRate: null,
+            humanRate: null,
+            positiveRate: null,
+            leadToEmail: null,
+            bounceRate: null,
+            medianReplySeconds: null,
+          });
+        }
+      }
+
+      /*
+       * Recomputed on the merged totals, from the same formulas the KPI band
+       * uses. positiveRate and leadToEmail are deliberately NOT recomputed:
+       * their numerator covers only EmailBison while the denominator now covers
+       * both, so any value would understate. Null renders as a dash.
+       */
+      merged = [...byId.values()]
+        .map((r) => ({
+          ...r,
+          replyRate: replyRate(r.replies, r.sent),
+          humanRate: humanRate(r.humanReplies, r.sent),
+          positiveRate: null,
+          leadToEmail: null,
+          bounceRate: bounceRate(r.bounces, r.sent),
+        }))
+        .sort((a, b) => b.sent - a.sent);
+    }
+
     // Totals are summed from the SAME rows the table renders, not queried
     // separately -- so the footer can never disagree with what's above it.
     const sum = (k: "sent" | "prospects" | "replies" | "humanReplies" | "positive" | "bounces") =>
-      rows.reduce((t, r) => t + r[k], 0);
+      merged.reduce((t, r) => t + r[k], 0);
 
     return NextResponse.json({
-      rows,
+      rows: merged,
       totals: {
         sent: sum("sent"),
         prospects: sum("prospects"),
