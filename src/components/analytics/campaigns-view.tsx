@@ -211,7 +211,7 @@ export function CampaignsView() {
   // No initial sort: the server already returns campaigns by volume, and the
   // third click returns to exactly that.
   const { sort, toggle } = useTableSort();
-  const [expanded, setExpanded] = useState<Set<number>>(new Set());
+  const [expanded, setExpanded] = useState<Set<number | string>>(new Set());
 
   const query = useQuery<{ rows: CampaignRow[]; count: number }>({
     queryKey: ["campaigns", qs],
@@ -355,7 +355,13 @@ export function CampaignsView() {
                     ))}
                   </tr>
 
-                  {isOpen ? (
+                  {/*
+                    Per-step stats are an EmailBison table keyed on an integer
+                    campaign id. An Instantly row has neither, so it does not
+                    expand — offering a chevron that opens an empty panel would
+                    read as missing data rather than an absent feature.
+                  */}
+                  {isOpen && typeof row.campaignId === "number" ? (
                     <StepRows campaignId={row.campaignId} colSpan={colSpan} />
                   ) : null}
                 </Fragment>

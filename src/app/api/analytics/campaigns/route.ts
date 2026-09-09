@@ -5,6 +5,21 @@ import { fetchFollowUpByCampaign } from "@/lib/analytics/follow-up.ts";
 
 export const dynamic = "force-dynamic";
 
+/**
+ * Instantly's numeric campaign status, in the words the table already uses.
+ *
+ * 0 draft · 1 active · 2 paused · 3 completed · negative values are error
+ * states. Anything unrecognised keeps its number rather than being forced into
+ * a familiar-looking word — a status invented at render time is worse than one
+ * that visibly needs looking up.
+ */
+function instantlyStatus(code: number): string {
+  return (
+    { 0: "draft", 1: "active", 2: "paused", 3: "completed" }[code] ??
+    `status ${code}`
+  );
+}
+
 export async function GET(request: NextRequest) {
   const teamId = Number(process.env.EMAILBISON_TEAM_ID || 2);
   let filters;
@@ -75,9 +90,81 @@ export async function GET(request: NextRequest) {
       interviews: Number(r.interviews ?? 0),
       hires: Number(r.hires ?? 0),
       outcomesTotal: Number(r.outcomes_total ?? 0),
+      // Every row above comes from EmailBison. Named so the table can say so
+      // once Instantly rows sit beside them.
+      platform: "emailbison" as const,
     }));
 
-    return NextResponse.json({ rows, count: rows.length });
+    /*
+     * INSTANTLY, when the platform filter asks for it.
+     *
+     * Appended rather than merged: an Instantly campaign is a different
+     * campaign, not another view of an EmailBison one, and joining them by name
+     * would silently fuse "Howe Realty Group - Maricopa" on one platform with
+     * its namesake on the other — two real campaigns, two audiences, one row.
+     *
+     * The columns Instantly cannot fill are left ABSENT rather than zeroed:
+     * positive (MasterInbox owns it), the sentiment split, reply timing and
+     * outcomes. The formatters render a missing value as a dash, which is the
+     * truth; a 0 would read as "none of these replies were positive".
+     */
+    const wantsInstantly = filters.platforms.includes("instantly");
+    const wantsEmailBison =
+      filters.platforms.length === 0 || filters.platforms.includes("emailbison");
+
+    let all = wantsEmailBison ? rows : [];
+
+    if (wantsInstantly) {
+      const { data: inst, error: instError } = await getSupabase().rpc(
+        "analytics_instantly_campaign_rows",
+        {
+          p_team_id: teamId,
+          p_from: filters.from,
+          p_to: filters.to,
+          p_client_ids: filters.clientIds.length ? filters.clientIds : null,
+          // EmailBison campaign ids are integers and cannot select an Instantly
+          // campaign, so that filter is deliberately not forwarded.
+          p_campaign_ids: null,
+        },
+      );
+      if (instError) throw new Error(instError.message);
+
+      const instRows = ((inst ?? []) as Record<string, unknown>[]).map((r) => ({
+        campaignId: String(r.campaign_id),
+        campaignName: String(r.campaign_name),
+        clientName: (r.client_name as string | null) ?? null,
+        status: instantlyStatus(Number(r.status)),
+        stepCount: 0,
+        variantCount: 0,
+        sent: Number(r.sent),
+        prospects: Number(r.prospects),
+        replies: Number(r.replies),
+        humanReplies: Number(r.human_replies),
+        positive: null,
+        negative: null,
+        neutral: null,
+        botReplies: null,
+        bounces: r.bounces === null ? null : Number(r.bounces),
+        medianReplySeconds: null,
+        avgReplySeconds: null,
+        medianFollowUpSeconds: null,
+        followUpSampleSize: null,
+        bouncesHard: null,
+        bouncesSoft: null,
+        introductions: null,
+        phoneScreens: null,
+        interviews: null,
+        hires: null,
+        outcomesTotal: null,
+        platform: "instantly" as const,
+      }));
+
+      // Sorted together by volume so the table reads as one estate rather than
+      // one platform stacked on the other.
+      all = [...all, ...instRows].sort((a, b) => Number(b.sent) - Number(a.sent));
+    }
+
+    return NextResponse.json({ rows: all, count: all.length });
   } catch (error) {
     console.error("[api/analytics/campaigns]", error);
     return NextResponse.json({ error: "Failed to load campaigns" }, { status: 500 });

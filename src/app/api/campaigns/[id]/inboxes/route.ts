@@ -57,16 +57,37 @@ export async function GET(
      * the right pool is on it.
      */
     const byTag = new Map<string, number>();
+    /*
+     * ...AND the mailboxes themselves. Counts answer "is the right pool on
+     * this campaign"; they do not answer "which inboxes are sending for it",
+     * which is the question actually asked. Both are cheap here because the
+     * EmailBison walk has already happened.
+     */
+    const vendorById = new Map<number, string | null>();
+
     if (ids.length) {
       const sb = getSupabase();
-      const { data } = await sb
-        .from("sender_emails")
-        .select("id, tags, status")
-        .eq("team_id", TEAM_ID())
-        .in("id", ids.slice(0, 1000));
-      for (const row of (data ?? []) as Array<{ tags: string[] | null }>) {
-        for (const tag of row.tags ?? []) {
-          byTag.set(tag, (byTag.get(tag) ?? 0) + 1);
+      /*
+       * Chunked: `.in()` on ~660 ids is fine, but a campaign can carry more
+       * than the 1,000 rows PostgREST will return, and a silent truncation here
+       * would drop inboxes from a list whose whole job is to be complete
+       * (rule 7).
+       */
+      for (let i = 0; i < ids.length; i += 500) {
+        const { data } = await sb
+          .from("sender_emails")
+          .select("id, tags, vendor")
+          .eq("team_id", TEAM_ID())
+          .in("id", ids.slice(i, i + 500));
+        for (const row of (data ?? []) as Array<{
+          id: number;
+          tags: string[] | null;
+          vendor: string | null;
+        }>) {
+          vendorById.set(row.id, row.vendor);
+          for (const tag of row.tags ?? []) {
+            byTag.set(tag, (byTag.get(tag) ?? 0) + 1);
+          }
         }
       }
     }
@@ -77,6 +98,20 @@ export async function GET(
       tags: [...byTag.entries()]
         .map(([tag, inboxes]) => ({ tag, inboxes }))
         .sort((a, b) => b.inboxes - a.inboxes),
+      inboxes: attached
+        .map((s) => ({
+          id: s.id,
+          email: s.email,
+          status: s.status ?? null,
+          vendor: vendorById.get(s.id) ?? null,
+          dailyLimit: s.daily_limit ?? null,
+        }))
+        // Broken ones first: an assigned inbox that cannot connect is the only
+        // row in this list anyone needs to act on.
+        .sort((a, b) => {
+          const bad = (x: { status: string | null }) => (x.status === "Connected" ? 1 : 0);
+          return bad(a) - bad(b) || (a.email ?? "").localeCompare(b.email ?? "");
+        }),
     });
   } catch (error) {
     console.error("[api/campaigns/inboxes]", error);

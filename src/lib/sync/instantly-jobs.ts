@@ -303,60 +303,78 @@ function makeInstantlyDayStatsJob(windowDays: number): JobFn {
     const teamId = TEAM_ID();
     const sb = getSupabase();
 
-    const from = daysAgo(windowDays);
-    const to = daysAgo(0);
-
     /*
-     * Ask which campaigns were ACTIVE in the window first. Instantly answers
-     * that in one call, and it turns 317 per-campaign requests into however
-     * many actually sent — 18 for a recent nine-day range. The rest have
-     * nothing to report and asking would be 299 calls for empty arrays.
+     * ONE CALL PER DAY, not one per campaign.
+     *
+     * /campaigns/analytics returns EVERY campaign's figures for whatever range
+     * it is given, so asking for a single day yields the whole workspace for
+     * that day. Three things follow, and all of them are why this replaced a
+     * per-campaign fan-out over the daily-series endpoint:
+     *
+     *  - IT CARRIES BOUNCES. The daily-series endpoint has no bounce field at
+     *    all, which forced the KPI band to dash bounces whenever Instantly was
+     *    in scope. Verified: nine daily calls sum to exactly the same bounce
+     *    total as one nine-day ranged call.
+     *  - IT IS CHEAPER. 45 days is 45 requests against 113 for one per active
+     *    campaign, and it no longer scales with the number of campaigns.
+     *  - IT AGREES WITH THE WORKSPACE SERIES. A single day's sends matched the
+     *    daily endpoint exactly (942 = 942).
      */
-    const active = await client.getCampaignAnalytics({ from, to });
-
     const rows: Record<string, unknown>[] = [];
-    let calls = 1;
+    let calls = 0;
 
-    for (const campaign of active) {
-      const days = await client.getDailyAnalytics(from, to, campaign.campaign_id);
+    for (let back = windowDays; back >= 0; back--) {
+      const day = daysAgo(back);
+      const perCampaign = await client.getCampaignAnalytics({ from: day, to: day });
       calls++;
-      for (const d of days) {
-        // A day with nothing on it is not a fact worth storing, and storing it
-        // would make "no data" and "a real zero" identical (rule 1).
-        if (!d.sent && !d.replies && !d.contacted) continue;
+
+      for (const c of perCampaign) {
+        /*
+         * A day with nothing on it is not a fact worth storing, and storing it
+         * would make "no data" and "a real zero" identical (rule 1). The ranged
+         * endpoint returns a row for every campaign whether or not it acted.
+         */
+        if (!c.emails_sent_count && !c.reply_count && !c.bounced_count) continue;
         rows.push({
-          campaign_id: campaign.campaign_id,
+          campaign_id: c.campaign_id,
           team_id: teamId,
-          stat_date: d.date,
-          sent: d.sent ?? 0,
-          contacted: d.contacted ?? 0,
-          new_leads_contacted: d.new_leads_contacted ?? 0,
-          opened: d.opened ?? 0,
-          unique_opened: d.unique_opened ?? 0,
-          replies: d.replies ?? 0,
-          unique_replies: d.unique_replies ?? 0,
-          replies_automatic: d.replies_automatic ?? 0,
-          clicks: d.clicks ?? 0,
-          opportunities: d.opportunities ?? 0,
+          stat_date: day,
+          sent: c.emails_sent_count ?? 0,
+          contacted: c.contacted_count ?? 0,
+          new_leads_contacted: c.new_leads_contacted_count ?? 0,
+          opened: c.open_count ?? 0,
+          unique_opened: c.open_count_unique ?? 0,
+          replies: c.reply_count ?? 0,
+          unique_replies: c.reply_count_unique ?? c.reply_count ?? 0,
+          replies_automatic: c.reply_count_automatic ?? 0,
+          clicks: c.link_click_count ?? 0,
+          opportunities: c.total_opportunities ?? 0,
+          bounced: c.bounced_count ?? 0,
+          unsubscribed: c.unsubscribed_count ?? 0,
+          leads_count: c.leads_count ?? null,
+          completed: c.completed_count ?? null,
           fetched_at: new Date().toISOString(),
         });
       }
     }
 
     if (rows.length) {
-      const { error } = await sb
-        .from("instantly_campaign_day_stats")
-        .upsert(rows, { onConflict: "campaign_id,stat_date" });
-      if (error) throw new Error(`instantly day stats: ${error.message}`);
+      for (let i = 0; i < rows.length; i += 500) {
+        const { error } = await sb
+          .from("instantly_campaign_day_stats")
+          .upsert(rows.slice(i, i + 500), { onConflict: "campaign_id,stat_date" });
+        if (error) throw new Error(`instantly day stats: ${error.message}`);
+      }
     }
 
     return {
       rowsWritten: rows.length,
       apiCalls: calls,
       detail: {
-        window: `${from} → ${to}`,
-        activeCampaigns: active.length,
-        days: rows.length,
+        window: `${daysAgo(windowDays)} → ${daysAgo(0)}`,
+        days: calls,
+        rows: rows.length,
+        bounces: rows.reduce((n, r) => n + Number(r.bounced ?? 0), 0),
       },
     };
   };

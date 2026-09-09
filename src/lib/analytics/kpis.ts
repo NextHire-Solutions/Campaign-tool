@@ -258,20 +258,23 @@ export async function loadKpis(
    * of the operation. But the two platforms do not answer the same questions,
    * and pretending otherwise breaks rule 3:
    *
-   *   Sent / Prospects / Replies / Human   both platforms report these, and
-   *                                        they add up.
+   *   Sent / Prospects / Replies / Human / BOUNCES   both platforms report
+   *                                        these and they add up. Bounces
+   *                                        joined that list in 077, once the
+   *                                        per-day figures were found on the
+   *                                        ranged analytics endpoint.
    *   POSITIVE                             MasterInbox labels decide it, and
    *                                        they key on EmailBison reply ids.
-   *                                        No Instantly reply has one.
-   *   BOUNCES                              Instantly publishes no per-day
-   *                                        bounce figure at all — only a
-   *                                        lifetime count per campaign.
+   *                                        No Instantly reply has one, and no
+   *                                        amount of Instantly syncing changes
+   *                                        that — it is a gap in what has been
+   *                                        LABELLED, not in what was fetched.
    *
-   * So adding Instantly's replies to the numerator-less Positive would halve
-   * the Positive RATE overnight and it would look like a collapse in
-   * performance rather than a change in what is being counted. Instead those
-   * two go NULL — a dash — whenever Instantly is in scope, and `coverage` says
-   * which platforms the row actually describes.
+   * Adding Instantly's replies to the numerator-less Positive would halve the
+   * Positive RATE overnight and read as a collapse in performance rather than a
+   * change in what is being counted. So Positive alone goes NULL — a dash —
+   * whenever Instantly is in scope, and `coverage` says which platforms the
+   * row actually describes.
    */
   const wantsInstantly =
     filters.platforms.length > 0 && filters.platforms.includes("instantly");
@@ -293,7 +296,13 @@ export async function loadKpis(
     if (instError) throw new Error(`analytics_instantly_kpis: ${instError.message}`);
 
     const i = (inst ?? [])[0] as
-      | { sent: number; prospects: number; replies: number; human_replies: number }
+      | {
+          sent: number;
+          prospects: number;
+          replies: number;
+          human_replies: number;
+          bounces: number | null;
+        }
       | undefined;
 
     if (i) {
@@ -307,7 +316,16 @@ export async function loadKpis(
         human_replies: Number(base?.human_replies ?? 0) + Number(i.human_replies ?? 0),
         // Deliberately unavailable while Instantly is in scope. See above.
         positive: null,
-        bounces: null,
+        /*
+         * Summed where BOTH sides have a figure. If Instantly's is null — a
+         * window entirely before 077 wrote per-day bounces — the total goes
+         * null too rather than silently reporting the EmailBison half as though
+         * it were the whole.
+         */
+        bounces:
+          i.bounces == null
+            ? null
+            : Number(base?.bounces ?? 0) + Number(i.bounces),
       } satisfies RpcRow;
     }
   }

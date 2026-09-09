@@ -2,7 +2,7 @@
 
 import { useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { AlertTriangle, Inbox, Loader2 } from "lucide-react";
+import { AlertTriangle, Inbox, Loader2, Search } from "lucide-react";
 import {
   Dialog,
   DialogContent,
@@ -12,6 +12,7 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
 import { fullNumber } from "@/lib/analytics/format.ts";
 import { cn } from "@/lib/utils";
 
@@ -44,10 +45,19 @@ interface Summary {
   }>;
 }
 
+interface AssignedInbox {
+  id: number;
+  email: string;
+  status: string | null;
+  vendor: string | null;
+  dailyLimit: number | null;
+}
 interface Assigned {
   total: number;
   connected: number;
   tags: Array<{ tag: string; inboxes: number }>;
+  /** The actual mailboxes on this campaign, broken ones first. */
+  inboxes: AssignedInbox[];
 }
 
 export function AssignInboxesDialog({
@@ -63,6 +73,14 @@ export function AssignInboxesDialog({
 }) {
   const [tag, setTag] = useState<string>("");
   const [action, setAction] = useState<"attach" | "remove">("attach");
+  /*
+   * A third view, because counts and a list answer different questions. "Nicole
+   * Pool 346" tells you the right pool is on the campaign; it does not tell you
+   * WHICH mailboxes are sending for it, which is what was actually asked for
+   * and the only way to spot a specific broken inbox.
+   */
+  const [showing, setShowing] = useState<"pools" | "assigned">("pools");
+  const [assignedSearch, setAssignedSearch] = useState("");
   const [running, setRunning] = useState(false);
   const [summary, setSummary] = useState<Summary | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -188,7 +206,7 @@ export function AssignInboxesDialog({
                       <button
                         key={key}
                         type="button"
-                        onClick={() => setAction(key)}
+                        onClick={() => { setAction(key); setShowing("pools"); }}
                         className={cn(
                           "flex-1 rounded-md px-3 py-1 text-sm transition-colors",
                           action === key
@@ -203,20 +221,31 @@ export function AssignInboxesDialog({
 
                   {campaignIds.length === 1 && assigned ? (
                     <div className="rounded-md border bg-muted/30 p-2.5 text-xs">
-                      <p className="tnum">
-                        <strong className="font-medium text-foreground">
-                          {fullNumber(assigned.total)}
-                        </strong>{" "}
-                        inbox{assigned.total === 1 ? "" : "es"} currently assigned
-                        {assigned.connected !== assigned.total ? (
-                          <span className="text-muted-foreground">
-                            {" "}
-                            · {fullNumber(assigned.total - assigned.connected)} of them cannot
-                            connect
-                          </span>
-                        ) : null}
-                      </p>
-                      {assigned.tags.length ? (
+                      <div className="flex flex-wrap items-baseline justify-between gap-2">
+                        <p className="tnum">
+                          <strong className="font-medium text-foreground">
+                            {fullNumber(assigned.total)}
+                          </strong>{" "}
+                          inbox{assigned.total === 1 ? "" : "es"} currently assigned
+                          {assigned.connected !== assigned.total ? (
+                            <span className="text-[#b02525]">
+                              {" "}
+                              · {fullNumber(assigned.total - assigned.connected)} of them cannot
+                              connect
+                            </span>
+                          ) : null}
+                        </p>
+                        <button
+                          type="button"
+                          onClick={() =>
+                            setShowing(showing === "assigned" ? "pools" : "assigned")
+                          }
+                          className="shrink-0 underline underline-offset-2 hover:text-foreground"
+                        >
+                          {showing === "assigned" ? "Back to pools" : "See which ones"}
+                        </button>
+                      </div>
+                      {assigned.tags.length && showing === "pools" ? (
                         <p className="tnum mt-1 text-muted-foreground">
                           {assigned.tags
                             .slice(0, 4)
@@ -227,9 +256,67 @@ export function AssignInboxesDialog({
                     </div>
                   ) : null}
 
-                  {isLoading ? (
+                  {/* The mailboxes themselves. */}
+                  {showing === "assigned" && assigned ? (
+                    <>
+                      <div className="relative">
+                        <Search className="absolute left-2.5 top-1/2 size-3.5 -translate-y-1/2 text-muted-foreground" />
+                        <Input
+                          value={assignedSearch}
+                          onChange={(e) => setAssignedSearch(e.target.value)}
+                          placeholder="Search assigned inboxes…"
+                          className="h-8 pl-8 text-sm"
+                        />
+                      </div>
+                      <div className="max-h-72 divide-y overflow-auto rounded-md border">
+                        {(() => {
+                          const q = assignedSearch.trim().toLowerCase();
+                          const list = q
+                            ? assigned.inboxes.filter(
+                                (i) =>
+                                  i.email?.toLowerCase().includes(q) ||
+                                  (i.vendor ?? "").toLowerCase().includes(q),
+                              )
+                            : assigned.inboxes;
+                          if (!list.length) {
+                            return (
+                              <p className="px-2.5 py-6 text-center text-xs text-muted-foreground">
+                                No assigned inbox matches that.
+                              </p>
+                            );
+                          }
+                          return list.map((i) => (
+                            <p
+                              key={i.id}
+                              className="flex items-center gap-2 px-2.5 py-1.5 text-xs"
+                            >
+                              <span className="min-w-0 flex-1 truncate" title={i.email}>
+                                {i.email}
+                              </span>
+                              <span className="shrink-0 text-muted-foreground">
+                                {i.vendor ?? "Untagged"}
+                              </span>
+                              {/*
+                                Status shown only when it is NOT the norm — 641
+                                rows reading "Connected" is not information, and
+                                the broken ones are sorted to the top so they
+                                are the first thing in view.
+                              */}
+                              {i.status && i.status !== "Connected" ? (
+                                <span className="shrink-0 rounded bg-[#fdecec] px-1 text-[10px] font-medium text-[#b02525]">
+                                  {i.status}
+                                </span>
+                              ) : null}
+                            </p>
+                          ));
+                        })()}
+                      </div>
+                    </>
+                  ) : null}
+
+                  {showing === "pools" && isLoading ? (
                     <p className="text-muted-foreground">Loading inbox tags…</p>
-                  ) : (
+                  ) : showing === "assigned" ? null : (
                     <div className="max-h-64 space-y-0.5 overflow-auto rounded-md border p-1">
                       {tags.map((t) => (
                         <button
@@ -266,7 +353,7 @@ export function AssignInboxesDialog({
                     </div>
                   )}
 
-                  {chosen ? (
+                  {chosen && showing === "pools" ? (
                     <div className="flex items-start gap-2 rounded-md border border-amber-300/60 bg-amber-50 p-2.5 text-xs text-amber-900">
                       <AlertTriangle className="mt-px size-3.5 shrink-0" />
                       <span className="tnum">

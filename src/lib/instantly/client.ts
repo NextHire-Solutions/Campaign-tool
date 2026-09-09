@@ -169,6 +169,8 @@ export class InstantlyClient {
   async getCampaignAnalytics(
     range?: { from: string; to: string },
   ): Promise<InstantlyCampaignAnalytics[]> {
+    // A single day is just a range whose ends are equal; callers asking for one
+    // day get every campaign's figures FOR that day, bounces included.
     const query = new URLSearchParams();
     if (range) {
       query.set("start_date", range.from);

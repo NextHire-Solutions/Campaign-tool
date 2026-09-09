@@ -23,7 +23,14 @@ import {
  */
 
 export interface CampaignRow {
-  campaignId: number;
+  /*
+   * A NUMBER on EmailBison and a UUID STRING on Instantly. The two platforms
+   * key their campaigns differently and nothing here needs to do arithmetic on
+   * an id — it is a React key and a link target.
+   */
+  campaignId: number | string;
+  /** Which platform the row came from; decides what it can and cannot report. */
+  platform?: "emailbison" | "instantly";
   campaignName: string;
   clientName: string | null;
   status: string | null;
@@ -39,11 +46,20 @@ export interface CampaignRow {
   prospects: number;
   replies: number;
   humanReplies: number;
-  positive: number;
-  negative: number;
-  neutral: number;
-  botReplies: number;
-  bounces: number;
+  /*
+   * NULLABLE, because Instantly cannot report them.
+   *
+   * Positive is decided by MasterInbox labels, which key on EmailBison reply
+   * ids — so an Instantly row has no Positive and no sentiment split, and the
+   * per-reply timings and outcome counts have no Instantly equivalent either.
+   * Null renders as a dash; a 0 would claim none of those replies were
+   * positive, which is a different and false statement.
+   */
+  positive: number | null;
+  negative: number | null;
+  neutral: number | null;
+  botReplies: number | null;
+  bounces: number | null;
   medianReplySeconds: number | null;
   /*
    * The mean beside the median. They answer different questions: the median is
@@ -64,19 +80,26 @@ export interface CampaignRow {
    * `bounces` — a handful of bounces produce no notification we stored — which
    * is why these are named for the classification rather than for "bounces".
    */
-  bouncesHard: number;
-  bouncesSoft: number;
+  // Null on Instantly: it reports a bounce total but no hard/soft split.
+  bouncesHard: number | null;
+  bouncesSoft: number | null;
   /*
    * Outcome counts, attributed to this campaign (WT §7). Only outcomes we can
    * PROVE this campaign earned are here, so these sum to less than the
    * Attribution tab's totals — Instantly and unmatched outcomes belong to no
    * campaign. Spreading them would be the error 025 exists to prevent.
    */
-  introductions: number;
-  phoneScreens: number;
-  interviews: number;
-  hires: number;
-  outcomesTotal: number;
+  /*
+   * Null on Instantly rather than 0. Outcomes reach this product through the
+   * MasterInbox feed and are credited only to campaigns it can PROVE — an
+   * Instantly campaign has none attributed here, and printing 0 hires would
+   * assert it earned none rather than that none can be traced to it.
+   */
+  introductions: number | null;
+  phoneScreens: number | null;
+  interviews: number | null;
+  hires: number | null;
+  outcomesTotal: number | null;
 }
 
 export type ColumnGroup =
@@ -127,8 +150,14 @@ export const COLUMNS: ColumnDef[] = [
   // Rates
   { key: "replyRate", label: "Reply %", group: "Rates", defaultVisible: true, render: (r) => percent(replyRate(r.replies, r.sent), 2), sortValue: (r) => replyRate(r.replies, r.sent) },
   { key: "humanRate", label: "Human %", group: "Rates", defaultVisible: true, render: (r) => percent(humanRate(r.humanReplies, r.sent), 2), sortValue: (r) => humanRate(r.humanReplies, r.sent) },
-  { key: "positiveRate", label: "Positive %", group: "Rates", defaultVisible: true, render: (r) => percent(positiveRate(r.positive, r.replies), 2), sortValue: (r) => positiveRate(r.positive, r.replies) },
-  { key: "bounceRate", label: "Bounce %", group: "Rates", defaultVisible: false, render: (r) => percent(bounceRate(r.bounces, r.sent), 2), sortValue: (r) => bounceRate(r.bounces, r.sent) },
+  /*
+   * A rate whose numerator is unknown is UNKNOWN, not zero. An Instantly row
+   * has no Positive — MasterInbox owns it — and computing 0/884 would print
+   * "0.00%" beside 884 replies, which reads as a campaign that converted
+   * nobody rather than one whose replies have not been labelled.
+   */
+  { key: "positiveRate", label: "Positive %", group: "Rates", defaultVisible: true, render: (r) => percent(r.positive == null ? null : positiveRate(r.positive, r.replies), 2), sortValue: (r) => (r.positive == null ? null : positiveRate(r.positive, r.replies)) },
+  { key: "bounceRate", label: "Bounce %", group: "Rates", defaultVisible: false, render: (r) => percent(r.bounces == null ? null : bounceRate(r.bounces, r.sent), 2), sortValue: (r) => (r.bounces == null ? null : bounceRate(r.bounces, r.sent)) },
   /*
    * A "soft" bounce is a delay — a receiving server asking us to retry — and
    * EmailBison counts it in the same total as a permanent failure. Live data:
@@ -138,8 +167,10 @@ export const COLUMNS: ColumnDef[] = [
    */
   { key: "bouncesHard", label: "Hard", group: "Rates", defaultVisible: false, render: (r) => fullNumber(r.bouncesHard), sortValue: (r) => r.bouncesHard },
   { key: "bouncesSoft", label: "Soft (delay)", group: "Rates", defaultVisible: false, render: (r) => fullNumber(r.bouncesSoft), sortValue: (r) => r.bouncesSoft },
-  { key: "hardBounceRate", label: "Hard %", group: "Rates", defaultVisible: false, render: (r) => percent(bounceRate(r.bouncesHard, r.sent), 2), sortValue: (r) => bounceRate(r.bouncesHard, r.sent) },
-  { key: "leadToEmail", label: "Lead:Email", group: "Rates", defaultVisible: true, render: (r) => ratio(leadToEmail(r.sent, r.positive)), sortValue: (r) => leadToEmail(r.sent, r.positive) },
+  { key: "hardBounceRate", label: "Hard %", group: "Rates", defaultVisible: false, render: (r) => percent(r.bouncesHard == null ? null : bounceRate(r.bouncesHard, r.sent), 2), sortValue: (r) => (r.bouncesHard == null ? null : bounceRate(r.bouncesHard, r.sent)) },
+  // "emails per positive reply" is meaningless without a Positive count, so an
+  // Instantly row dashes rather than dividing by an unknown.
+  { key: "leadToEmail", label: "Lead:Email", group: "Rates", defaultVisible: true, render: (r) => ratio(r.positive == null ? null : leadToEmail(r.sent, r.positive)), sortValue: (r) => (r.positive == null ? null : leadToEmail(r.sent, r.positive)) },
 
   /*
    * Reply sentiment — all three, at last.
@@ -179,8 +210,8 @@ export const COLUMNS: ColumnDef[] = [
   { key: "interviews", label: "Interviews", group: "Events", defaultVisible: false, render: (r) => fullNumber(r.interviews), sortValue: (r) => r.interviews },
   { key: "hires", label: "Hires", group: "Events", defaultVisible: false, render: (r) => fullNumber(r.hires), sortValue: (r) => r.hires },
   { key: "outcomesTotal", label: "Outcomes", group: "Events", defaultVisible: false, render: (r) => fullNumber(r.outcomesTotal), sortValue: (r) => r.outcomesTotal },
-  { key: "emailsPerIntro", label: "E:Intro", group: "Events", defaultVisible: false, render: (r) => ratio(leadToEmail(r.sent, r.introductions)), sortValue: (r) => leadToEmail(r.sent, r.introductions) },
-  { key: "emailsPerHire", label: "E:Hire", group: "Events", defaultVisible: false, render: (r) => ratio(leadToEmail(r.sent, r.hires)), sortValue: (r) => leadToEmail(r.sent, r.hires) },
+  { key: "emailsPerIntro", label: "E:Intro", group: "Events", defaultVisible: false, render: (r) => ratio(r.introductions == null ? null : leadToEmail(r.sent, r.introductions)), sortValue: (r) => (r.introductions == null ? null : leadToEmail(r.sent, r.introductions)) },
+  { key: "emailsPerHire", label: "E:Hire", group: "Events", defaultVisible: false, render: (r) => ratio(r.hires == null ? null : leadToEmail(r.sent, r.hires)), sortValue: (r) => (r.hires == null ? null : leadToEmail(r.sent, r.hires)) },
 ];
 
 export const COLUMN_GROUPS: ColumnGroup[] = [
