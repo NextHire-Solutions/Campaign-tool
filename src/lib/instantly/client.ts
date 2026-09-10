@@ -454,6 +454,51 @@ export class InstantlyClient {
     });
   }
 
+  /**
+   * Account tags, resolved through Instantly's separate custom-tags resource.
+   *
+   * Accounts do NOT carry their tags inline — `GET /accounts` returns none — so
+   * this is a two-call join: the tag list for names, then the mappings for
+   * which resource carries which tag. `resource_type: 1` is an account, and the
+   * `resource_id` is the address itself rather than an id.
+   *
+   * Returns a map of email → tag names, so the caller writes one row per
+   * account instead of reasoning about the join.
+   */
+  async getAccountTags(): Promise<Map<string, string[]>> {
+    const tagPage = await this.request<{ items?: Array<{ id: string; label?: string; name?: string }> }>(
+      "/custom-tags?limit=100",
+    );
+    const nameById = new Map(
+      (tagPage?.items ?? []).map((t) => [t.id, (t.label ?? t.name ?? "").trim()]),
+    );
+
+    const byEmail = new Map<string, string[]>();
+    let after: string | undefined;
+    // Bounded: the workspace has ~1,000 mappings, and an unbounded walk over a
+    // paginated endpoint is how a sync job becomes an infinite loop.
+    for (let page = 0; page < 60; page++) {
+      const url = `/custom-tag-mappings?limit=100${after ? `&starting_after=${after}` : ""}`;
+      const res = await this.request<{
+        items?: Array<{ tag_id: string; resource_id: string; resource_type: number }>;
+        next_starting_after?: string;
+      }>(url);
+      const items = res?.items ?? [];
+      for (const m of items) {
+        if (m.resource_type !== 1) continue; // not an account
+        const name = nameById.get(m.tag_id);
+        if (!name) continue;
+        const email = String(m.resource_id).toLowerCase();
+        const existing = byEmail.get(email);
+        if (existing) existing.push(name);
+        else byEmail.set(email, [name]);
+      }
+      after = res?.next_starting_after;
+      if (!after || !items.length) break;
+    }
+    return byEmail;
+  }
+
   /** Plan limits, so a caller can explain a refusal instead of retrying it. */
   async getLeadQuota(): Promise<{ limit: number; used: number; remaining: number }> {
     const plan = await this.request<{

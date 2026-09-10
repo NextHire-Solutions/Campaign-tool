@@ -61,12 +61,18 @@ interface Assigned {
 }
 
 export function AssignInboxesDialog({
-  campaignIds,
+  targets,
   open,
   onOpenChange,
   onDone,
 }: {
-  campaignIds: number[];
+  /*
+   * Platform-qualified. The two platforms assign inboxes by different
+   * mechanisms — EmailBison attaches and removes, Instantly replaces the whole
+   * `email_list` — and their POOLS are different sets, so a campaign id alone
+   * cannot say which pool list to even offer.
+   */
+  targets: Array<{ platform: "emailbison" | "instantly"; id: string }>;
   open: boolean;
   onOpenChange: (open: boolean) => void;
   onDone: () => void;
@@ -86,10 +92,21 @@ export function AssignInboxesDialog({
   const [error, setError] = useState<string | null>(null);
   const queryClient = useQueryClient();
 
+  /*
+   * ONE PLATFORM AT A TIME, because the pools are different sets of inboxes.
+   * A mixed selection has no single list of tags to offer — "Nicole Pool" names
+   * 428 Instantly accounts and a different EmailBison pool — so the dialog asks
+   * for a narrower selection rather than silently assigning whichever pool it
+   * happened to load.
+   */
+  const platforms = [...new Set(targets.map((t) => t.platform))];
+  const platform = platforms.length === 1 ? platforms[0] : null;
+  const campaignIds = targets.map((t) => t.id);
+
   const { data, isLoading } = useQuery<{ tags: TagRow[] }>({
-    queryKey: ["inbox-tags"],
+    queryKey: ["inbox-tags", platform],
     queryFn: async () => {
-      const response = await fetch("/api/campaigns/inboxes");
+      const response = await fetch(`/api/campaigns/inboxes?platform=${platform ?? "emailbison"}`);
       if (!response.ok) throw new Error("Could not load inbox tags");
       return response.json();
     },
@@ -162,7 +179,7 @@ export function AssignInboxesDialog({
       const response = await fetch("/api/campaigns/inboxes", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ campaignIds, tag, action, confirm: true }),
+        body: JSON.stringify({ targets, tag, action, confirm: true }),
       });
       const body = await response.json();
       if (!response.ok && response.status !== 207) {
@@ -200,6 +217,25 @@ export function AssignInboxesDialog({
           </DialogTitle>
           <DialogDescription asChild>
             <div className="space-y-3 pt-1 text-sm">
+              {/*
+                A mixed selection is refused rather than half-served. The two
+                platforms' pools are different sets of inboxes, so there is no
+                honest single list to offer — and quietly assigning one
+                platform's pool to whichever campaigns matched would be a change
+                nobody asked for.
+              */}
+              {!platform && !summary ? (
+                <p className="rounded-lg border border-amber-300/60 bg-amber-50 px-3 py-2 text-xs text-amber-900">
+                  This selection spans EmailBison and Instantly, and each has its
+                  own inbox pools. Filter to one platform and try again.
+                </p>
+              ) : null}
+              {platform === "instantly" && !summary ? (
+                <p className="rounded-lg border bg-muted/40 px-3 py-2 text-xs text-muted-foreground">
+                  Instantly replaces a campaign&rsquo;s whole sending list rather than
+                  attaching to it, so inboxes already assigned are read first and kept.
+                </p>
+              ) : null}
               {summary ? (
                 <>
                   <p className="tnum">
@@ -501,11 +537,15 @@ export function AssignInboxesDialog({
                 onClick={run}
                 disabled={
                   running ||
+                  // A mixed selection has no single pool list, so there is
+                  // nothing safe to apply. Refused here as well as explained
+                  // above, because the explanation is easy to scroll past.
+                  !platform ||
                   !tag ||
                   willSend === 0 ||
                   // Nothing would change: every connected inbox in this pool is
                   // already on the campaign.
-                  (action === "attach" && single && newlyAdded === 0)
+                  (action === "attach" && single && platform === "emailbison" && newlyAdded === 0)
                 }
               >
                 {running ? <Loader2 className="mr-1.5 size-3.5 animate-spin" /> : null}

@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { createEmailBisonClient } from "@/lib/emailbison/client.ts";
+import { createInstantlyClient } from "@/lib/instantly/client.ts";
 import { describeEmailBisonError } from "@/lib/emailbison/errors.ts";
 import { getSupabase } from "@/lib/supabase/server";
 
@@ -19,7 +20,8 @@ import { getSupabase } from "@/lib/supabase/server";
 const CHUNK = 250;
 
 export interface InboxAssignmentResult {
-  campaignId: number;
+  campaignId: string;
+  platform: "emailbison" | "instantly";
   name: string;
   ok: boolean;
   /** Inboxes EmailBison confirmed for this campaign. */
@@ -78,8 +80,77 @@ function chunk<T>(items: T[], size: number): T[][] {
  * however many are dead. Removal has no such filter — a dead inbox that is
  * already attached is exactly the thing you want to be able to take off.
  */
+/**
+ * The Instantly half.
+ *
+ * THERE IS NO ATTACH OR REMOVE. A campaign's sending inboxes ARE its
+ * `email_list` array, so every change is a READ-MODIFY-WRITE of the whole list.
+ * Two things follow, and both are the opposite of the EmailBison path:
+ *
+ *  - The current list must be read first. Writing only the pool would DETACH
+ *    every inbox already assigned — silently, with a 200 — which is the worst
+ *    kind of destructive: it looks like it worked.
+ *  - The campaigns cannot be written concurrently with anything else touching
+ *    the same campaign, because a replace has no merge semantics. They are done
+ *    serially for the same reason the EmailBison side is.
+ */
+async function assignInstantly(
+  campaignIds: string[],
+  emails: string[],
+  action: "attach" | "remove",
+  nameById: Map<string, string>,
+): Promise<InboxAssignmentResult[]> {
+  const client = createInstantlyClient();
+  const results: InboxAssignmentResult[] = [];
+  const wanted = new Set(emails.map((e) => e.toLowerCase()));
+
+  for (const campaignId of campaignIds) {
+    const name = nameById.get(campaignId) ?? campaignId;
+    try {
+      const current = await client.getCampaignInboxes(campaignId);
+      const have = new Set(current.map((e) => e.toLowerCase()));
+
+      const next =
+        action === "attach"
+          ? [...new Set([...current, ...emails])]
+          : current.filter((e) => !wanted.has(e.toLowerCase()));
+
+      /*
+       * `applied` counts what CHANGED, not the size of the pool. Re-assigning a
+       * pool that is already attached is a normal thing to do, and reporting
+       * "428 assigned" when nothing moved would make the number meaningless.
+       */
+      const applied =
+        action === "attach"
+          ? emails.filter((e) => !have.has(e.toLowerCase())).length
+          : current.length - next.length;
+
+      if (applied > 0) await client.setCampaignInboxes(campaignId, next);
+
+      results.push({
+        campaignId,
+        platform: "instantly",
+        name,
+        ok: true,
+        applied,
+        alreadyAttached: action === "attach" ? emails.length - applied : undefined,
+      });
+    } catch (error) {
+      results.push({
+        campaignId,
+        platform: "instantly",
+        name,
+        ok: false,
+        applied: 0,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+  }
+  return results;
+}
+
 export async function assignInboxesByTag(
-  campaignIds: number[],
+  targets: Array<{ platform: "emailbison" | "instantly"; id: string }>,
   tag: string,
   action: "attach" | "remove",
   actor: string,
@@ -88,6 +159,10 @@ export async function assignInboxesByTag(
   const sb = getSupabase();
   const eb = createEmailBisonClient();
   const batchId = randomUUID();
+
+  const ebIds = targets.filter((t) => t.platform === "emailbison").map((t) => Number(t.id));
+  const instantlyIds = targets.filter((t) => t.platform === "instantly").map((t) => t.id);
+  const campaignIds = ebIds;
 
   /*
    * IN SQL, RETURNING ONE ROW HOLDING AN ARRAY. This started as a PostgREST
@@ -130,12 +205,18 @@ export async function assignInboxesByTag(
 
   if (!inboxIds.length) return summary;
 
+  /*
+   * Names from the unified view, so one lookup covers both platforms and a
+   * result row can never be labelled with the wrong campaign's name.
+   */
   const { data: campaignRows } = await sb
-    .from("campaigns")
+    .from("campaigns_unified")
     .select("id, name")
     .eq("team_id", teamId)
-    .in("id", campaignIds);
-  const nameById = new Map((campaignRows ?? []).map((c) => [c.id, c.name as string]));
+    .in("id", targets.map((t) => t.id));
+  const nameById = new Map(
+    (campaignRows ?? []).map((c) => [String(c.id), c.name as string]),
+  );
 
   const auditRows: Record<string, unknown>[] = [];
 
@@ -146,8 +227,14 @@ export async function assignInboxesByTag(
    * The same reasoning as bulk-deploy.
    */
   for (const campaignId of campaignIds) {
-    const name = nameById.get(campaignId) ?? `#${campaignId}`;
-    const result: InboxAssignmentResult = { campaignId, name, ok: true, applied: 0 };
+    const name = nameById.get(String(campaignId)) ?? `#${campaignId}`;
+    const result: InboxAssignmentResult = {
+      campaignId: String(campaignId),
+      platform: "emailbison",
+      name,
+      ok: true,
+      applied: 0,
+    };
 
     for (const part of chunk(inboxIds, CHUNK)) {
       try {
@@ -175,6 +262,8 @@ export async function assignInboxesByTag(
     auditRows.push({
       team_id: teamId,
       campaign_id: campaignId,
+      platform: "emailbison",
+      campaign_ref: String(campaignId),
       campaign_name: name,
       action: action === "attach" ? "attach-inboxes" : "remove-inboxes",
       actor,
@@ -186,6 +275,40 @@ export async function assignInboxesByTag(
     });
   }
 
+  /*
+   * Instantly, after EmailBison rather than beside it. The two use different
+   * inbox pools (534 tagged Instantly accounts vs EmailBison's own), and
+   * running them concurrently would interleave their audit rows for no gain —
+   * the whole operation is already serial per campaign by design.
+   */
+  if (instantlyIds.length) {
+    const { data: emails } = await sb.rpc("instantly_account_emails_by_tag", {
+      p_team_id: teamId,
+      p_tag: tag,
+    });
+    const pool = (emails ?? []) as string[];
+    const instResults = await assignInstantly(instantlyIds, pool, action, nameById);
+    summary.results.push(...instResults);
+
+    for (const r of instResults) {
+      auditRows.push({
+        team_id: teamId,
+        // No EmailBison campaign to name — 083 added platform + campaign_ref.
+        campaign_id: null,
+        platform: "instantly",
+        campaign_ref: r.campaignId,
+        campaign_name: r.name,
+        action: action === "attach" ? "attach-inboxes" : "remove-inboxes",
+        actor,
+        status: r.ok ? "ok" : "error",
+        error: r.error ?? null,
+        before_state: { tag, inboxes: pool.length },
+        after_state: r.ok ? { applied: r.applied } : null,
+        batch_id: batchId,
+      });
+    }
+  }
+
   if (auditRows.length) await sb.from("campaign_audit_log").insert(auditRows);
 
   return summary;
@@ -194,7 +317,15 @@ export async function assignInboxesByTag(
 /** The inbox tags worth offering, read from the cache. */
 export async function listInboxTags(
   teamId: number,
+  platform: "emailbison" | "instantly" = "emailbison",
 ): Promise<Array<{ tag: string; inboxes: number; connected: number }>> {
+  if (platform === "instantly") {
+    const { data, error } = await getSupabase().rpc("analytics_instantly_inbox_tags", {
+      p_team_id: teamId,
+    });
+    if (error) throw new Error(`tag lookup: ${error.message}`);
+    return (data ?? []) as Array<{ tag: string; inboxes: number; connected: number }>;
+  }
   /*
    * Counted in SQL. Doing it in JS over a `.select()` reported "Nicole Pool:
    * 269" against a true 534, because the select stopped at 1,000 of 1,496 rows

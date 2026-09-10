@@ -501,17 +501,13 @@ export function CampaignsPage() {
       </div>
 
       {/*
-        EMAILBISON ONLY, and filtered rather than disabled at the boundary.
-        Inbox assignment on Instantly is a different mechanism — the inboxes are
-        an `email_list` array replaced wholesale on the campaign, not an
-        attach/remove pair — so handing this dialog an Instantly id would send a
-        uuid to an endpoint expecting an integer. The buttons that open it are
-        already gated on the selection being all-EmailBison; this is the second
-        line, because a dialog that silently no-ops on half a selection is worse
-        than one that cannot be opened.
+        Both platforms now. The dialog handles ONE platform at a time because
+        the pools are different sets of inboxes — "Nicole Pool" names 428
+        Instantly accounts and a separate EmailBison pool — so it asks for a
+        narrower selection rather than assigning whichever list it loaded.
       */}
       <AssignInboxesDialog
-        campaignIds={emailBisonSelection.map((c) => Number(c.id))}
+        targets={selectedCampaigns.map((c) => ({ platform: c.platform, id: c.id }))}
         open={assigningInboxes}
         onOpenChange={setAssigningInboxes}
         onDone={() => setSelected(new Set())}
@@ -533,8 +529,8 @@ export function CampaignsPage() {
           <span className="tnum text-xs font-medium">{selected.size} selected</span>
           {dialogsNeedEmailBison ? (
             <span className="text-[11px] text-muted-foreground">
-              · Inboxes and Re-campaign apply to the {emailBisonSelection.length} EmailBison
-              campaign{emailBisonSelection.length === 1 ? "" : "s"}
+              · Re-campaign applies to the {emailBisonSelection.length} EmailBison campaign
+              {emailBisonSelection.length === 1 ? "" : "s"}
             </span>
           ) : null}
           {(["pause", "resume", "archive", "duplicate"] as CampaignAction[]).map((action) => {
@@ -568,20 +564,12 @@ export function CampaignsPage() {
           <Button
             variant="outline"
             size="sm"
-            disabled={emailBisonSelection.length === 0}
-            title={
-              emailBisonSelection.length === 0
-                ? "Inbox assignment runs against EmailBison. Instantly assigns inboxes by replacing the campaign's whole sending list, which this dialog does not do yet."
-                : undefined
-            }
+            disabled={selected.size === 0}
             onClick={() => setAssigningInboxes(true)}
             className="h-7 gap-1.5 text-xs"
           >
             <Inbox className="size-3" />
             Inboxes
-            {selectionHasInstantly && emailBisonSelection.length > 0 ? (
-              <span className="tnum text-muted-foreground">{emailBisonSelection.length}</span>
-            ) : null}
           </Button>
           {/*
             Client feedback: re-campaign was reachable only from a campaign's

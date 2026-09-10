@@ -508,6 +508,51 @@ export const syncInstantlyDayStatsBackfill: JobFn = async ({
   };
 };
 
+/*
+ * Account tags — the pools, so "assign Nicole Pool to these campaigns" means
+ * the same thing on both platforms.
+ *
+ * Cheap and complete in one run: two endpoints, about eleven calls, no
+ * watermark. Tags change rarely and a full rewrite is simpler to reason about
+ * than a delta — an account that LOSES a tag has to lose it here too, and a
+ * delta sync is exactly where that gets missed.
+ */
+export const syncInstantlyAccountTags: JobFn = async (): Promise<JobResult> => {
+  const client = createInstantlyClient();
+  const teamId = TEAM_ID();
+  const sb = getSupabase();
+
+  const byEmail = await client.getAccountTags();
+
+  const { data: accounts } = await sb
+    .from("instantly_accounts")
+    .select("email")
+    .eq("team_id", teamId);
+
+  const rows = ((accounts ?? []) as Array<{ email: string }>).map((a) => ({
+    email: a.email,
+    team_id: teamId,
+    // EVERY account is written, including the untagged ones — that is what
+    // clears a tag someone removed upstream. Writing only the tagged ones would
+    // make removal invisible.
+    tags: byEmail.get(a.email.toLowerCase()) ?? [],
+  }));
+
+  await chunkUpsert("instantly_accounts", rows, "email");
+
+  const tagged = rows.filter((r) => r.tags.length).length;
+  return {
+    rowsWritten: rows.length,
+    apiCalls: 11,
+    detail: {
+      accounts: rows.length,
+      tagged,
+      untagged: rows.length - tagged,
+      pools: [...new Set([...byEmail.values()].flat())].sort(),
+    },
+  };
+};
+
 // --- per-inbox sending figures ------------------------------------------------
 
 /**

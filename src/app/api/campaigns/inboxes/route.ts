@@ -32,16 +32,40 @@ async function requireSession() {
   );
 }
 
-export async function GET() {
+export async function GET(request: NextRequest) {
   const session = await requireSession();
   if (!session?.email) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
-  return NextResponse.json({ tags: await listInboxTags(TEAM_ID()) });
+  /*
+   * The pools differ per platform — EmailBison's live on sender_emails, and
+   * Instantly's come from its custom-tags resource (084). Returning one list
+   * for both would offer a pool that does not exist on the platform being
+   * assigned, and the assignment would then quietly match nothing.
+   */
+  const platform =
+    request.nextUrl.searchParams.get("platform") === "instantly" ? "instantly" : "emailbison";
+  return NextResponse.json({
+    platform,
+    tags: await listInboxTags(TEAM_ID(), platform),
+  });
 }
 
+const Target = z.object({
+  platform: z.enum(["emailbison", "instantly"]),
+  id: z.string().min(1),
+});
+
 const Body = z.object({
-  campaignIds: z.array(z.number().int().positive()).min(1).max(500),
+  /*
+   * Platform-qualified, because a campaign id alone spans two id spaces and
+   * the two platforms assign inboxes by different mechanisms entirely —
+   * EmailBison attaches, Instantly replaces the whole list.
+   *
+   * `campaignIds` still works and still means EmailBison.
+   */
+  targets: z.array(Target).min(1).max(500).optional(),
+  campaignIds: z.array(z.number().int().positive()).min(1).max(500).optional(),
   tag: z.string().min(1).max(200),
   action: z.enum(["attach", "remove"]),
   /*
@@ -72,10 +96,26 @@ export async function POST(request: NextRequest) {
     );
   }
 
-  const { campaignIds, tag, action } = parsed.data;
+  const { tag, action } = parsed.data;
+  const targets =
+    parsed.data.targets ??
+    (parsed.data.campaignIds ?? []).map((id) => ({
+      platform: "emailbison" as const,
+      id: String(id),
+    }));
+
+  if (!targets.length) {
+    return NextResponse.json(
+      { error: "No campaigns given. Send `targets: [{platform, id}]`." },
+      { status: 400 },
+    );
+  }
+
+  // Deduplicated on the PAIR: the same number can be a valid id on both sides.
+  const unique = [...new Map(targets.map((t) => [`${t.platform}:${t.id}`, t])).values()];
 
   const summary = await assignInboxesByTag(
-    [...new Set(campaignIds)],
+    unique,
     tag,
     action,
     session.email,

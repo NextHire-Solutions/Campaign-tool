@@ -80,6 +80,8 @@ export const SCHEDULE = [
    */
   { job: "sync-instantly-campaigns", everyMinutes: 60 },
   { job: "sync-instantly-accounts", everyMinutes: 180 },
+  // Pools change rarely; 3 hours is plenty and keeps this off the busy minutes.
+  { job: "sync-instantly-account-tags", everyMinutes: 180 },
   // Costs nothing upstream — it only re-reads names we already hold.
   { job: "sync-instantly-clients", everyMinutes: 60 },
   // Asks which campaigns were active in the window first, so it makes one call
