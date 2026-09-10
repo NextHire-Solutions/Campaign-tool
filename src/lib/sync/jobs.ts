@@ -1811,11 +1811,42 @@ export function makeCampaignLeadsJob(windowDays: number | null, pageBudget: numb
       touched.add(row.campaign_id);
     }
 
-    if (touched.size) {
+    /*
+     * CHUNKED, BECAUSE EVERY RPC HAS AN 8-SECOND BUDGET.
+     *
+     * PostgREST connects as `authenticator`, which carries
+     * `statement_timeout=8s`, and that setting survives the SET ROLE to
+     * service_role. So 8s is the ceiling on every call this app makes — not the
+     * 2 minutes a psql session sees, which is why this looked fine by hand and
+     * failed in production.
+     *
+     * One call covering every touched campaign exceeded it and opened the
+     * circuit breaker: sync-campaign-leads had not succeeded for 22 hours, and
+     * the Leads tab, the re-campaign selection and the bounce denominator were
+     * all quietly running on stale membership.
+     *
+     * Chunking has to happen HERE rather than inside the function. The timeout
+     * applies to the top-level statement, so a loop inside plpgsql is still one
+     * statement and still dies at 8s.
+     *
+     * 8 campaigns measured against the heaviest 8 in the estate: 37,187 rows in
+     * 3.0s, against 4.6s for 10 and over budget for all 182. Sized on the worst
+     * case rather than the average, because the average chunk is not what times
+     * out.
+     */
+    const REFRESH_CHUNK = 8;
+    const ids = [...touched];
+    for (let i = 0; i < ids.length; i += REFRESH_CHUNK) {
       const { error } = await sb.rpc("refresh_campaign_leads", {
         p_team_id: teamId,
-        p_campaign_ids: [...touched],
+        p_campaign_ids: ids.slice(i, i + REFRESH_CHUNK),
       });
+      /*
+       * Fail loudly on the first bad chunk rather than pressing on. The
+       * refresh is idempotent (rule 1), so the next run re-covers everything
+       * including the chunks that did land — whereas swallowing the error would
+       * leave a permanently stale slice of membership that nothing reports.
+       */
       if (error) throw new Error(`refresh_campaign_leads: ${error.message}`);
     }
 
