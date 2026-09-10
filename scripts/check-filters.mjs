@@ -308,6 +308,36 @@ if (CL) {
     "/api/campaigns?limit=500", `/api/campaigns?limit=500&client_id=${CL}`, metric.mgmtTotal);
 }
 
+console.log("\n— campaigns page spans both platforms —");
+{
+  const all = await get("/api/campaigns?limit=1");
+  const eb = await get("/api/campaigns?limit=1&platforms=emailbison");
+  const inst = await get("/api/campaigns?limit=1&platforms=instantly");
+  const n = (j) => Number(j?.total ?? NaN);
+  if (!n(inst)) {
+    bad("Instantly campaigns are listed", "the Instantly-only list is empty");
+  } else if (n(eb) + n(inst) !== n(all)) {
+    bad("the two platforms partition the list", `${n(eb)} + ${n(inst)} != ${n(all)}`);
+  } else {
+    ok("the two platforms partition the list", `${n(eb)} + ${n(inst)} = ${n(all)}`);
+  }
+
+  // A row must say which platform it belongs to: the id alone is ambiguous
+  // across a bigint and a uuid, and the available actions differ.
+  const row = (await get("/api/campaigns?limit=1&platforms=instantly")).items?.[0];
+  if (row?.platform === "instantly" && typeof row.id === "string") {
+    ok("rows carry platform and a string id", `${String(row.id).slice(0, 8)}…`);
+  } else {
+    bad("rows carry platform and a string id", JSON.stringify({ platform: row?.platform, id: typeof row?.id }));
+  }
+
+  // Instantly's integer status must arrive translated, not raw.
+  const statuses = new Set(((await get("/api/campaigns?limit=400&platforms=instantly")).items ?? []).map((r) => r.status));
+  const numeric = [...statuses].filter((v) => /^-?\d+$/.test(String(v)));
+  if (numeric.length) bad("Instantly status is translated", `raw codes leaked: ${numeric.join(", ")}`);
+  else ok("Instantly status is translated", [...statuses].join(", "));
+}
+
 console.log("\n— pagination —");
 {
   const page1 = await get("/api/campaigns?limit=5&offset=0");

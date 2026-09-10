@@ -60,7 +60,13 @@ import { cn } from "@/lib/utils";
  */
 
 interface Campaign {
-  id: number;
+  /*
+   * TEXT, not a number, because the list now spans two platforms that key
+   * differently — EmailBison uses a bigint, Instantly a uuid. An id alone is
+   * ambiguous, so `platform` always travels with it.
+   */
+  id: string;
+  platform: "emailbison" | "instantly";
   name: string;
   status: string;
   tags: unknown[];
@@ -80,10 +86,31 @@ interface Campaign {
   excluded: boolean;
 }
 
+/*
+ * Which platform a row belongs to, shown on the row rather than only in the
+ * filter. Two campaigns can carry the same client and a similar name across
+ * platforms, and the actions available differ between them — so the platform
+ * has to be readable without changing a filter to find out.
+ *
+ * Only Instantly is badged. Badging both doubles the ink on every row to say
+ * something the reader already knows for four rows in five; the exception is
+ * what carries information.
+ */
+function PlatformBadge({ platform }: { platform: string }) {
+  if (platform !== "instantly") return null;
+  return (
+    <span className="ml-1.5 shrink-0 rounded border border-blue-200 bg-blue-50 px-1 py-px text-[10px] font-medium text-blue-700 align-middle">
+      Instantly
+    </span>
+  );
+}
+
 interface ListResponse {
   items: Campaign[];
   total: number;
   statusCounts: Record<string, number>;
+  /** Campaigns per platform, in the current scope. */
+  platformCounts?: Record<string, number>;
   all: number;
   clients: Array<{ id: string; name: string }>;
   /** Distinct tag names in use, read from the data rather than hardcoded. */
@@ -177,9 +204,15 @@ export function CampaignsPage() {
   const [search, setSearch] = useState("");
   const [tag, setTag] = useState("");
   const [clientId, setClientId] = useState("");
+  /*
+   * Platform, empty meaning BOTH. This list is the whole sending estate — 501
+   * campaigns across two platforms — and omitting one silently was the bug
+   * that made 318 Instantly campaigns invisible here.
+   */
+  const [platform, setPlatform] = useState<"" | "emailbison" | "instantly">("");
   const [view, setView] = useState<"list" | "grid">("list");
-  const [selected, setSelected] = useState<Set<number>>(new Set());
-  const [pending, setPending] = useState<{ action: CampaignAction; ids: number[] } | null>(null);
+  const [selected, setSelected] = useState<Set<string>>(new Set());
+  const [pending, setPending] = useState<{ action: CampaignAction; ids: string[] } | null>(null);
   const [assigningInboxes, setAssigningInboxes] = useState(false);
   const [reCampaigning, setReCampaigning] = useState(false);
   const [results, setResults] = useState<{ action: CampaignAction; results: ActionResult[] } | null>(
@@ -187,12 +220,13 @@ export function CampaignsPage() {
   );
 
   const { data, isFetching } = useQuery<ListResponse>({
-    queryKey: ["campaigns", status, search, tag, clientId],
+    queryKey: ["campaigns", status, search, tag, clientId, platform],
     queryFn: async () => {
       const params = new URLSearchParams({ status });
       if (search) params.set("q", search);
       if (tag) params.set("tag", tag);
       if (clientId) params.set("client_id", clientId);
+      if (platform) params.set("platforms", platform);
       const response = await fetch(`/api/campaigns?${params}`);
       if (!response.ok) throw new Error("Failed to load campaigns");
       return response.json();
@@ -217,7 +251,7 @@ export function CampaignsPage() {
   );
 
   const apply = useMutation({
-    mutationFn: async ({ action, ids }: { action: CampaignAction; ids: number[] }) => {
+    mutationFn: async ({ action, ids }: { action: CampaignAction; ids: string[] }) => {
       const response = await fetch("/api/campaigns/actions", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -240,10 +274,30 @@ export function CampaignsPage() {
   });
 
   const selectedCampaigns = items.filter((c) => selected.has(c.id));
+  /*
+   * The EmailBison half of the selection. Re-campaign and inbox assignment run
+   * against EmailBison's API and have no working Instantly equivalent today —
+   * re-campaign because the workspace is over its lead limit so leads cannot be
+   * added, inbox assignment because Instantly replaces the whole list rather
+   * than attaching. Naming the subset keeps that fact in one place.
+   */
+  const emailBisonSelection = selectedCampaigns.filter((c) => c.platform === "emailbison");
+  const selectionHasInstantly = selectedCampaigns.some((c) => c.platform === "instantly");
 
   /** Only the campaigns an action can actually apply to — the rest are named, not sent. */
+  /*
+   * ELIGIBILITY IS PLATFORM-AWARE. `canApply` answers a question about a
+   * campaign's STATUS; whether the action exists on the campaign's platform is
+   * a separate question, and conflating them would offer "Pause 25" over a
+   * selection where 12 of those calls cannot be made at all.
+   *
+   * Pause, resume, archive and duplicate all run through EmailBison's API
+   * today. The Instantly client can do the equivalent — that is verified — but
+   * the action route has not been taught to dispatch by platform yet, so the
+   * honest count here is the EmailBison one.
+   */
   const eligible = (action: CampaignAction, list: Campaign[]) =>
-    list.filter((c) => canApply(action, c.status));
+    list.filter((c) => c.platform === "emailbison" && canApply(action, c.status));
 
   function toggleAll() {
     setSelected(selected.size === items.length ? new Set() : new Set(items.map((c) => c.id)));
@@ -341,6 +395,34 @@ export function CampaignsPage() {
         </div>
 
         {/*
+          Platform. Both platforms' campaigns share this list, so the control
+          that separates them belongs beside the other scoping filters rather
+          than in a tab — the actions, the client filter and the search all
+          apply across both, and a tab would imply otherwise.
+        */}
+        <select
+          aria-label="Filter by platform"
+          value={platform}
+          onChange={(e) => {
+            setPlatform(e.target.value as "" | "emailbison" | "instantly");
+            // A selection made on one platform means nothing on the other, and
+            // acting on a stale one is how a bulk action hits the wrong rows.
+            setSelected(new Set());
+          }}
+          className="h-8 shrink-0 rounded-md border bg-background px-2 text-xs"
+        >
+          <option value="">All platforms</option>
+          <option value="emailbison">
+            EmailBison{data?.platformCounts?.emailbison != null && !platform
+              ? ` (${data.platformCounts.emailbison})` : ""}
+          </option>
+          <option value="instantly">
+            Instantly{data?.platformCounts?.instantly != null && !platform
+              ? ` (${data.platformCounts.instantly})` : ""}
+          </option>
+        </select>
+
+        {/*
           Client filter. The route already understood `client_id`; only the
           control was missing, which is why this is a select and not a new
           query path. Unassigned is offered as a real choice: a campaign whose
@@ -400,8 +482,18 @@ export function CampaignsPage() {
         </div>
       </div>
 
+      {/*
+        EMAILBISON ONLY, and filtered rather than disabled at the boundary.
+        Inbox assignment on Instantly is a different mechanism — the inboxes are
+        an `email_list` array replaced wholesale on the campaign, not an
+        attach/remove pair — so handing this dialog an Instantly id would send a
+        uuid to an endpoint expecting an integer. The buttons that open it are
+        already gated on the selection being all-EmailBison; this is the second
+        line, because a dialog that silently no-ops on half a selection is worse
+        than one that cannot be opened.
+      */}
       <AssignInboxesDialog
-        campaignIds={[...selected]}
+        campaignIds={emailBisonSelection.map((c) => Number(c.id))}
         open={assigningInboxes}
         onOpenChange={setAssigningInboxes}
         onDone={() => setSelected(new Set())}
@@ -409,9 +501,9 @@ export function CampaignsPage() {
 
       {/* Mounted only with a single selection, so the dialog can never be
           handed an ambiguous source campaign. */}
-      {selectedCampaigns.length === 1 ? (
+      {selectedCampaigns.length === 1 && selectedCampaigns[0].platform === "emailbison" ? (
         <ReCampaignDialog
-          campaignId={selectedCampaigns[0].id}
+          campaignId={Number(selectedCampaigns[0].id)}
           campaignName={selectedCampaigns[0].name}
           open={reCampaigning}
           onOpenChange={setReCampaigning}
@@ -421,6 +513,12 @@ export function CampaignsPage() {
       {selected.size > 0 ? (
         <div className="flex shrink-0 items-center gap-2 border-b bg-accent/40 px-6 py-2">
           <span className="tnum text-xs font-medium">{selected.size} selected</span>
+          {selectionHasInstantly ? (
+            <span className="text-[11px] text-muted-foreground">
+              · actions apply to the {emailBisonSelection.length} EmailBison campaign
+              {emailBisonSelection.length === 1 ? "" : "s"}
+            </span>
+          ) : null}
           {(["pause", "resume", "archive", "duplicate"] as CampaignAction[]).map((action) => {
             const count = eligible(action, selectedCampaigns).length;
             const Icon = ACTION_ICON[action];
@@ -452,11 +550,20 @@ export function CampaignsPage() {
           <Button
             variant="outline"
             size="sm"
+            disabled={emailBisonSelection.length === 0}
+            title={
+              emailBisonSelection.length === 0
+                ? "Inbox assignment runs against EmailBison. Instantly assigns inboxes by replacing the campaign's whole sending list, which this dialog does not do yet."
+                : undefined
+            }
             onClick={() => setAssigningInboxes(true)}
             className="h-7 gap-1.5 text-xs"
           >
             <Inbox className="size-3" />
             Inboxes
+            {selectionHasInstantly && emailBisonSelection.length > 0 ? (
+              <span className="tnum text-muted-foreground">{emailBisonSelection.length}</span>
+            ) : null}
           </Button>
           {/*
             Client feedback: re-campaign was reachable only from a campaign's
@@ -468,11 +575,13 @@ export function CampaignsPage() {
           <Button
             variant="outline"
             size="sm"
-            disabled={selected.size !== 1}
+            disabled={selected.size !== 1 || emailBisonSelection.length !== 1}
             title={
-              selected.size === 1
-                ? undefined
-                : "Select exactly one campaign to re-campaign it"
+              selected.size !== 1
+                ? "Select exactly one campaign to re-campaign it"
+                : emailBisonSelection.length !== 1
+                  ? "Re-campaign is EmailBison only. On Instantly it would have to MOVE the leads — emptying the source campaign — because the workspace is over its lead limit and leads cannot be copied."
+                  : undefined
             }
             onClick={() => setReCampaigning(true)}
             className="h-7 gap-1.5 text-xs"
@@ -544,13 +653,26 @@ export function CampaignsPage() {
                     />
                   </td>
                   <td className="max-w-[380px] px-2 py-2">
-                    <Link
-                      href={`/campaigns/${campaign.id}`}
-                      className="block truncate hover:underline"
-                      title={campaign.name}
-                    >
-                      {campaign.name}
-                    </Link>
+                    {/*
+                      The detail page reads EmailBison's lead tables, so an
+                      Instantly row is deliberately NOT a link. A link that
+                      leads to an empty page reads as broken data rather than
+                      an absent feature.
+                    */}
+                    {campaign.platform === "emailbison" ? (
+                      <Link
+                        href={`/campaigns/${campaign.id}`}
+                        className="truncate hover:underline"
+                        title={campaign.name}
+                      >
+                        {campaign.name}
+                      </Link>
+                    ) : (
+                      <span className="truncate" title={campaign.name}>
+                        {campaign.name}
+                      </span>
+                    )}
+                    <PlatformBadge platform={campaign.platform} />
                   </td>
                   <td className="px-2 py-2 text-xs text-muted-foreground">
                     {campaign.excluded ? (
@@ -729,7 +851,7 @@ function ConfirmDialog({
   onCancel,
   onConfirm,
 }: {
-  pending: { action: CampaignAction; ids: number[] } | null;
+  pending: { action: CampaignAction; ids: string[] } | null;
   campaigns: Campaign[];
   eligible: Campaign[];
   leads: number;

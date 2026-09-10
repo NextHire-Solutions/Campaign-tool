@@ -25,6 +25,14 @@ export async function GET(request: NextRequest) {
   const params = request.nextUrl.searchParams;
 
   const status = params.get("status") ?? "all";
+  /*
+   * Platform, empty meaning BOTH — unlike the analytics bar, where an empty
+   * platform filter means EmailBison only because Positive cannot cover
+   * Instantly. There is no such metric here: this is a list of campaigns, and a
+   * list that silently omits 318 of 501 is the bug this replaced.
+   */
+  const platforms = (params.get("platforms") ?? "")
+    .split(",").map((p) => p.trim()).filter(Boolean);
   const search = (params.get("q") ?? "").trim();
   const clientId = params.get("client_id");
   const tag = params.get("tag");
@@ -32,9 +40,9 @@ export async function GET(request: NextRequest) {
   const offset = Math.max(Number(params.get("offset") ?? 0), 0);
 
   let query = sb
-    .from("campaigns")
+    .from("campaigns_unified")
     .select(
-      "id, name, status, type, tags, total_leads, lifetime_emails_sent, lifetime_unique_replies, completion_percentage, max_emails_per_day, eb_created_at, eb_updated_at",
+      "id, platform, name, status, tags, total_leads, lifetime_emails_sent, lifetime_unique_replies, completion_percentage, max_emails_per_day, created_at, updated_at, client_id, excluded, ambiguous",
       /*
        * EXACT, not estimated. `estimated` reads the planner's row estimate,
        * which ignores the filters entirely on a small table — that is how the
@@ -43,9 +51,10 @@ export async function GET(request: NextRequest) {
        */
       { count: "exact" },
     )
-    .eq("team_id", teamId)
-    // Deleted upstream: kept for history, never offered as a choice.
-    .is("deleted_at", null);
+    // The view already excludes campaigns deleted or archived upstream.
+    .eq("team_id", teamId);
+
+  if (platforms.length === 1) query = query.eq("platform", platforms[0]);
 
   if (status !== "all") query = query.eq("status", status);
   // `ilike` with a leading wildcard can't use a btree index, but at 95 rows
@@ -84,31 +93,36 @@ export async function GET(request: NextRequest) {
      * client, and "Unassigned" excludes them too. A filter whose options
      * cannot between them reach every row is one that hides work.
      */
-    // campaign_clients has no team_id — it is keyed by campaign_id alone, and
-    // scoping it to a team here returned nothing, which turned "unassigned"
-    // into "everything".
-    const { data: maps } = await sb
-      .from("campaign_clients")
-      .select("campaign_id, client_id, excluded");
-    const rowsOf = (maps ?? []) as Array<{
-      campaign_id: number;
-      client_id: string | null;
-      excluded: boolean;
-    }>;
+    /*
+     * Both mapping tables, because the list now spans both platforms and the
+     * ids do not collide (bigint vs uuid) once cast to text. Reading only the
+     * EmailBison table would silently drop every Instantly campaign from a
+     * client filter while appearing to consider them.
+     */
+    const [ebMaps, instMaps] = await Promise.all([
+      sb.from("campaign_clients").select("campaign_id, client_id, excluded"),
+      sb.from("instantly_campaign_clients").select("campaign_id, client_id, excluded"),
+    ]);
+    const rowsOf = [...(ebMaps.data ?? []), ...(instMaps.data ?? [])].map((m) => ({
+      campaign_id: String((m as { campaign_id: unknown }).campaign_id),
+      client_id: (m as { client_id: string | null }).client_id,
+      excluded: Boolean((m as { excluded: boolean }).excluded),
+    }));
 
     if (clientId === "unassigned") {
       /*
        * "No client AND not excluded" — so the complement must remove BOTH the
        * assigned and the excluded, not just the assigned. Removing only the
-       * assigned left the 20 excluded campaigns in, making "Unassigned" and
-       * "Excluded" return the same 20 rows and the three options stop
-       * partitioning the workspace.
+       * assigned left the excluded campaigns in, making "Unassigned" and
+       * "Excluded" return the same rows and the three options stop partitioning
+       * the workspace.
        *
-       * Verified against SQL: 157 assigned + 7 unassigned + 20 excluded = 184.
+       * Ids are QUOTED because they are text now and a uuid contains hyphens,
+       * which PostgREST would otherwise read as part of its list syntax.
        */
       const spokenFor = rowsOf
         .filter((m) => m.excluded || m.client_id !== null)
-        .map((m) => m.campaign_id);
+        .map((m) => `"${m.campaign_id}"`);
       if (spokenFor.length) query = query.not("id", "in", `(${spokenFor.join(",")})`);
     } else {
       const wanted = rowsOf
@@ -120,53 +134,58 @@ export async function GET(request: NextRequest) {
         .map((m) => m.campaign_id);
       /*
        * An empty match must return nothing, not everything. `.in("id", [])` is
-       * the one case PostgREST turns into a no-op, so it is spelled out — this
-       * is the same "null means no restriction" trap that let the campaign
-       * filter leak an entire platform into the totals.
+       * the one case PostgREST turns into a no-op, so it is spelled out — the
+       * same "no restriction vs no rows" trap that let the campaign filter leak
+       * an entire platform into the analytics totals.
        */
-      query = wanted.length ? query.in("id", wanted) : query.eq("id", -1);
+      query = wanted.length ? query.in("id", wanted) : query.eq("id", "__none__");
     }
   }
 
-  const [{ data: rows, error, count }, mappings, clients, counts, allTags] = await Promise.all([
+  const [{ data: rows, error, count }, clients, counts, allTags] = await Promise.all([
     query.order("lifetime_emails_sent", { ascending: false, nullsFirst: false })
       .range(offset, offset + limit - 1),
-    sb.from("campaign_clients").select("campaign_id, client_id, excluded, ambiguous"),
     sb.from("clients").select("id, name").eq("team_id", teamId),
     // One grouped read for the status pills, so their numbers describe the
-    // whole workspace rather than the current page.
-    sb.from("campaigns").select("status").eq("team_id", teamId).is("deleted_at", null),
+    // whole workspace rather than the current page. Now across both platforms.
+    sb.from("campaigns_unified").select("status, platform").eq("team_id", teamId),
     // Tags for the filter's own dropdown, read from the data rather than a
-    // hardcoded list — a tag added in EmailBison must appear here without a
-    // deploy, and one that no longer exists must stop being offered.
+    // hardcoded list. EmailBison only — Instantly's tags live in a separate
+    // custom-tags resource that is not synced, and the view says so with an
+    // empty array rather than inventing them.
     sb.from("campaigns").select("tags").eq("team_id", teamId).is("deleted_at", null),
   ]);
 
   if (error) return NextResponse.json({ error: error.message }, { status: 500 });
 
   const clientById = new Map((clients.data ?? []).map((c) => [c.id, c.name]));
-  const mapByCampaign = new Map((mappings.data ?? []).map((m) => [m.campaign_id, m]));
 
-  const items = (rows ?? []).map((c) => {
-    const mapping = mapByCampaign.get(c.id);
-    return {
-      ...c,
-      clientId: mapping?.client_id ?? null,
-      clientName: mapping?.client_id ? (clientById.get(mapping.client_id) ?? null) : null,
-      excluded: Boolean(mapping?.excluded),
-      ambiguous: Boolean(mapping?.ambiguous),
-    };
-  });
+  // The view already carries the mapping, so there is no second lookup to drift
+  // out of step with it.
+  const items = (rows ?? []).map((c) => ({
+    ...c,
+    clientId: c.client_id ?? null,
+    clientName: c.client_id ? (clientById.get(c.client_id) ?? null) : null,
+    excluded: Boolean(c.excluded),
+    ambiguous: Boolean(c.ambiguous),
+    eb_updated_at: c.updated_at ?? null,
+  }));
 
   const statusCounts: Record<string, number> = {};
+  const platformCounts: Record<string, number> = {};
   for (const row of counts.data ?? []) {
+    // The pills must describe the same scope the list is showing, so a platform
+    // filter narrows them too — otherwise "Active 40" sits above 12 rows.
+    if (platforms.length === 1 && row.platform !== platforms[0]) continue;
     statusCounts[row.status] = (statusCounts[row.status] ?? 0) + 1;
+    platformCounts[row.platform] = (platformCounts[row.platform] ?? 0) + 1;
   }
 
   return NextResponse.json({
     items,
     total: count ?? items.length,
     statusCounts,
+    platformCounts,
     all: (counts.data ?? []).length,
     clients: (clients.data ?? []).map((c) => ({ id: c.id, name: c.name })),
     tags: [
