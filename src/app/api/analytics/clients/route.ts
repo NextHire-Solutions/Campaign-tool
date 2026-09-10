@@ -1,6 +1,7 @@
 import { NextResponse, type NextRequest } from "next/server";
 import { getSupabase } from "@/lib/supabase/server";
 import { resolveFilters, toISODate } from "@/lib/analytics/query-params.ts";
+import { resolvePlatformScope } from "@/lib/analytics/platform-scope.ts";
 import {
   bounceRate,
   humanRate,
@@ -88,9 +89,17 @@ export async function GET(request: NextRequest) {
      * halve every rate. The rate goes null instead, and the band above already
      * dashes Positive in this mode for the same reason.
      */
-    const wantsInstantly = filters.platforms.includes("instantly");
-    const wantsEmailBison =
-      filters.platforms.length === 0 || filters.platforms.includes("emailbison");
+    /*
+     * A campaign filter takes Instantly out of scope — see platform-scope.ts.
+     * analytics_instantly_client_rows has no campaign parameter at all, so with
+     * a campaign selected it returned every client on the platform.
+     */
+    const scope = resolvePlatformScope({
+      platforms: filters.platforms,
+      campaignIds: filters.campaignIds,
+    });
+    const wantsInstantly = scope.instantly;
+    const wantsEmailBison = scope.emailbison;
 
     let merged = wantsEmailBison ? rows : [];
 

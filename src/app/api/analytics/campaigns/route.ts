@@ -1,6 +1,7 @@
 import { NextResponse, type NextRequest } from "next/server";
 import { getSupabase } from "@/lib/supabase/server";
 import { resolveFilters, toISODate } from "@/lib/analytics/query-params.ts";
+import { resolvePlatformScope } from "@/lib/analytics/platform-scope.ts";
 import { fetchFollowUpByCampaign } from "@/lib/analytics/follow-up.ts";
 
 export const dynamic = "force-dynamic";
@@ -108,9 +109,17 @@ export async function GET(request: NextRequest) {
      * outcomes. The formatters render a missing value as a dash, which is the
      * truth; a 0 would read as "none of these replies were positive".
      */
-    const wantsInstantly = filters.platforms.includes("instantly");
-    const wantsEmailBison =
-      filters.platforms.length === 0 || filters.platforms.includes("emailbison");
+    /*
+     * A campaign filter takes Instantly out of scope entirely — see
+     * platform-scope.ts. Selecting campaign 55 and ticking Instantly used to
+     * return all 315 Instantly campaigns beside it.
+     */
+    const scope = resolvePlatformScope({
+      platforms: filters.platforms,
+      campaignIds: filters.campaignIds,
+    });
+    const wantsInstantly = scope.instantly;
+    const wantsEmailBison = scope.emailbison;
 
     let all = wantsEmailBison ? rows : [];
 
@@ -122,8 +131,12 @@ export async function GET(request: NextRequest) {
           p_from: filters.from,
           p_to: filters.to,
           p_client_ids: filters.clientIds.length ? filters.clientIds : null,
-          // EmailBison campaign ids are integers and cannot select an Instantly
-          // campaign, so that filter is deliberately not forwarded.
+          /*
+           * Safe as null ONLY because this branch is unreachable when a campaign
+           * filter is set — resolvePlatformScope has already taken Instantly out
+           * of scope. Null here means "no restriction", and reaching it with a
+           * live campaign selection is what returned the whole workspace.
+           */
           p_campaign_ids: null,
         },
       );
@@ -164,7 +177,11 @@ export async function GET(request: NextRequest) {
       all = [...all, ...instRows].sort((a, b) => Number(b.sent) - Number(a.sent));
     }
 
-    return NextResponse.json({ rows: all, count: all.length });
+    return NextResponse.json({
+      rows: all,
+      count: all.length,
+      instantlyExcludedBy: scope.instantlyExcludedBy ?? null,
+    });
   } catch (error) {
     console.error("[api/analytics/campaigns]", error);
     return NextResponse.json({ error: "Failed to load campaigns" }, { status: 500 });

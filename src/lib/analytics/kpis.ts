@@ -8,6 +8,7 @@ import {
   replyRate,
 } from "./metrics.ts";
 import type { ResolvedFilters } from "./query-params.ts";
+import { resolvePlatformScope } from "./platform-scope.ts";
 import { fetchFollowUpOverall } from "./follow-up.ts";
 
 /*
@@ -59,6 +60,14 @@ export interface KpiResponse {
     platforms?: string[];
     /** False while MasterInbox labels do not reach Instantly replies. */
     positiveCoversInstantly?: boolean;
+    /**
+     * Why Instantly was left out despite being selected. Null when it wasn't.
+     *
+     * The band needs to SAY this: an EmailBison-only figure with the Instantly
+     * chip visibly ticked looks like the filter is being ignored — which is
+     * precisely what the old behaviour did, in the other direction.
+     */
+    instantlyExcludedBy?: "campaign-filter" | null;
   };
 }
 
@@ -251,6 +260,19 @@ export async function loadKpis(
   const previousRow = rows.find((r) => r.period === "previous");
 
   /*
+   * `currentRow` IS THE EMAILBISON ROW, and it is computed whether or not
+   * EmailBison is in scope — the RPC above runs unconditionally.
+   *
+   * That was survivable only because the one path that excluded EmailBison
+   * (Instantly alone) always rebuilt the row from Instantly's figures. Once a
+   * campaign filter could take Instantly out of scope too, "Instantly only,
+   * campaign selected" left EmailBison's own numbers standing under an
+   * "Instantly only" label — the same leak as before with the platforms
+   * swapped. Zeroing it here means the row is never a platform nobody asked
+   * for, regardless of which branch runs below.
+   */
+
+  /*
    * INSTANTLY, WHEN THE PLATFORM FILTER ASKS FOR IT.
    *
    * Instantly is the larger half of the sending — 840,416 sends against
@@ -276,10 +298,31 @@ export async function loadKpis(
    * whenever Instantly is in scope, and `coverage` says which platforms the
    * row actually describes.
    */
-  const wantsInstantly =
-    filters.platforms.length > 0 && filters.platforms.includes("instantly");
-  const wantsEmailBison =
-    filters.platforms.length === 0 || filters.platforms.includes("emailbison");
+  /*
+   * A CAMPAIGN FILTER TAKES INSTANTLY OUT OF SCOPE. Campaign ids are
+   * EmailBison integers, so the selection contains no Instantly campaign and
+   * Instantly's honest contribution is nothing. Passing `p_campaign_ids: null`
+   * meant "no restriction" and added the entire Instantly workspace to whatever
+   * single campaign was selected — 43,283 sent on a campaign that sent 2.
+   */
+  const scope = resolvePlatformScope({
+    platforms: filters.platforms,
+    campaignIds: filters.campaignIds,
+  });
+  const wantsInstantly = scope.instantly;
+  const wantsEmailBison = scope.emailbison;
+
+  if (!wantsEmailBison && currentRow) {
+    currentRow = {
+      ...currentRow,
+      sent: 0,
+      prospects: 0,
+      replies: 0,
+      human_replies: 0,
+      positive: 0,
+      bounces: 0,
+    };
+  }
 
   let platformsCovered: string[] = wantsEmailBison ? ["emailbison"] : [];
 
@@ -352,6 +395,13 @@ export async function loadKpis(
        */
       platforms: platformsCovered,
       positiveCoversInstantly: false,
+      /*
+       * Instantly was asked for and deliberately left out. Surfaced so the band
+       * can say so — an unexplained EmailBison-only figure while the Instantly
+       * chip is visibly selected reads as the filter being ignored, which is
+       * exactly what the previous behaviour actually was.
+       */
+      instantlyExcludedBy: scope.instantlyExcludedBy ?? null,
     },
   };
 

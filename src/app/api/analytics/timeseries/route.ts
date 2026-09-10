@@ -1,6 +1,7 @@
 import { NextResponse, type NextRequest } from "next/server";
 import { getSupabase } from "@/lib/supabase/server";
 import { resolveFilters, toISODate } from "@/lib/analytics/query-params.ts";
+import { resolvePlatformScope } from "@/lib/analytics/platform-scope.ts";
 
 export const dynamic = "force-dynamic";
 
@@ -88,9 +89,33 @@ export async function GET(request: NextRequest) {
      * Instantly, so there is nothing to add. It is not summed, so it cannot
      * silently claim to cover both.
      */
-    const wantsInstantly = filters.platforms.includes("instantly");
-    const wantsEmailBison =
-      filters.platforms.length === 0 || filters.platforms.includes("emailbison");
+    /*
+     * A campaign filter takes Instantly out of scope — see platform-scope.ts.
+     * Otherwise the chart drew the whole Instantly workspace on top of the one
+     * EmailBison campaign the user had selected.
+     */
+    const scope = resolvePlatformScope({
+      platforms: filters.platforms,
+      campaignIds: filters.campaignIds,
+    });
+    const wantsInstantly = scope.instantly;
+    const wantsEmailBison = scope.emailbison;
+
+    /*
+     * Drop EmailBison's own series when it is not in scope — HOISTED OUT of the
+     * Instantly branch below, where it used to live.
+     *
+     * Nested, it only ran when Instantly was being added, which was every path
+     * that excluded EmailBison until a campaign filter could exclude Instantly
+     * too. "Instantly only, with a campaign selected" then left EmailBison's
+     * line on the chart under an "Instantly only" caption.
+     */
+    if (!wantsEmailBison) {
+      for (const p of points) {
+        p.sent = 0; p.prospects = 0; p.replies = 0; p.human = 0; p.bounces = 0;
+        p.positive = 0;
+      }
+    }
 
     if (wantsInstantly) {
       const { data: inst, error: instError } = await getSupabase().rpc(
@@ -105,14 +130,8 @@ export async function GET(request: NextRequest) {
       );
       if (instError) throw new Error(instError.message);
 
+      // Already zeroed above when EmailBison is out of scope.
       const byDay = new Map(points.map((p) => [p.date, p]));
-      if (!wantsEmailBison) {
-        // Instantly alone: every EmailBison point must go, or the chart would
-        // show one platform's line labelled as the other's.
-        for (const p of byDay.values()) {
-          p.sent = 0; p.prospects = 0; p.replies = 0; p.human = 0; p.bounces = 0;
-        }
-      }
 
       for (const r of (inst ?? []) as Array<Record<string, unknown>>) {
         const day = String(r.day);

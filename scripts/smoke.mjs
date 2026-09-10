@@ -295,6 +295,59 @@ if (!(await clickText("Instantly"))) {
   }
 }
 
+/*
+ * FILTERS MUST NOT LEAK ACROSS PLATFORMS.
+ *
+ * The bug: filtering to one EmailBison campaign and ticking Instantly reported
+ * 43,283 sent for a campaign that sent 2 — the Instantly queries dropped the
+ * campaign filter and returned the whole workspace. Checked through the API
+ * because the assertion is about numbers, not pixels.
+ *
+ * The invariant is arithmetic and cannot be satisfied by accident: with a
+ * campaign selected, adding Instantly to the platform filter must not change
+ * the total, because no Instantly campaign can be in an EmailBison selection.
+ */
+console.log("");
+{
+  const cookie = `bsa_session=${mintToken()}`;
+  const sent = async (qs) => {
+    const r = await fetch(`${BASE}/api/analytics/kpis?${qs}`, { headers: { cookie } });
+    if (!r.ok) return null;
+    return (await r.json())?.current?.sent ?? null;
+  };
+
+  // Pick a real campaign rather than hardcoding one, so this keeps working.
+  const list = await fetch(`${BASE}/api/analytics/campaigns?preset=30d`, {
+    headers: { cookie },
+  });
+  const first = (await list.json())?.rows?.find((r) => r.platform === "emailbison");
+
+  if (!first) {
+    fail("campaign filter × platform", "no EmailBison campaign to test with");
+  } else {
+    const base = `preset=30d&campaign_ids=${first.campaignId}`;
+    const eb = await sent(`${base}&platforms=emailbison`);
+    const both = await sent(`${base}&platforms=emailbison,instantly`);
+    const inst = await sent(`${base}&platforms=instantly`);
+
+    if (eb === null || both === null || inst === null) {
+      fail("campaign filter × platform", "could not read Sent");
+    } else if (both !== eb) {
+      fail(
+        "campaign filter × platform",
+        `adding Instantly changed a campaign-filtered total: ${eb} → ${both} (Instantly leaked in)`,
+      );
+    } else if (inst !== 0) {
+      fail(
+        "campaign filter × platform",
+        `Instantly alone reports ${inst} for an EmailBison campaign; must be 0`,
+      );
+    } else {
+      pass("campaign filter × platform", `${first.campaignName}: ${eb} sent, no leak`);
+    }
+  }
+}
+
 close();
 console.log(
   `\n${failures.length ? `${failures.length} FAILED` : "all checks passed"}\n`,

@@ -113,6 +113,23 @@ export function FilterBar() {
    */
   const supportsPlatform = tab === "attribution" || tab === "campaign" || tab === "volume";
 
+  /*
+   * The campaign filter, hidden where it does nothing.
+   *
+   * Volume answers two estate-level questions — how much can we send a day, and
+   * where did the volume go — and its RPC takes no campaign parameter at all.
+   * The control was therefore inert: selecting a campaign left the total at
+   * 251,963 and every bar unchanged. That is the same failure the Compare
+   * checkbox and the Platform dropdown were already hidden to avoid, and it is
+   * worse here because the tab still LOOKS filtered.
+   *
+   * Not wired up instead of hidden, deliberately: capacity is a property of the
+   * estate rather than of a campaign, so a campaign-filtered capacity figure
+   * has no meaning, and the split already groups BY campaign — the rows a
+   * filter would leave behind are the rows already on screen.
+   */
+  const supportsCampaignFilter = tab !== "volume";
+
   const { data: options } = useQuery<{ campaigns: Option[]; clients: Option[] }>({
     queryKey: ["filter-options"],
     queryFn: async () => {
@@ -141,13 +158,15 @@ export function FilterBar() {
 
       <Separator orientation="vertical" className="h-4" />
 
-      <MultiSelect
-        label="Campaigns"
-        options={options?.campaigns ?? []}
-        selected={filters.campaignIds.map(String)}
-        onChange={(next) => setFilters({ campaignIds: next.map(Number) })}
-        emptyText="No campaigns found"
-      />
+      {supportsCampaignFilter ? (
+        <MultiSelect
+          label="Campaigns"
+          options={options?.campaigns ?? []}
+          selected={filters.campaignIds.map(String)}
+          onChange={(next) => setFilters({ campaignIds: next.map(Number) })}
+          emptyText="No campaigns found"
+        />
+      ) : null}
 
       {/*
         §3 says this is "hidden when you're already looking at a single client".

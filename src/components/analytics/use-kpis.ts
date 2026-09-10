@@ -54,6 +54,8 @@ interface KpiResponse {
     platforms?: string[];
     /** False when Positive omits Instantly — which is why it reads as a dash. */
     positiveCoversInstantly?: boolean;
+    /** Set when a campaign filter took Instantly out of scope. */
+    instantlyExcludedBy?: "campaign-filter" | null;
   };
 }
 
@@ -121,7 +123,15 @@ export function useKpis() {
 
   const c = data?.current;
 
-  const scope = scopeNote(data?.coverage.platforms);
+  /*
+   * When a campaign filter has taken Instantly out of scope, SAY THAT instead
+   * of the bare platform name. "EmailBison only" beside a ticked Instantly chip
+   * invites the reader to conclude the filter is broken.
+   */
+  const scope =
+    data?.coverage.instantlyExcludedBy === "campaign-filter"
+      ? "EmailBison only — the campaign filter selects EmailBison campaigns, so Instantly is not included"
+      : scopeNote(data?.coverage.platforms);
 
   /*
    * Why Positive is a dash, said on the tile rather than left to be discovered.
