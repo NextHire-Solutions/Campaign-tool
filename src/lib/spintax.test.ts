@@ -78,3 +78,43 @@ describe("htmlToPlainText", () => {
     assert.ok(htmlToPlainText("<p>Hi {FIRST_NAME},</p>").includes("{FIRST_NAME}"));
   });
 });
+
+/*
+ * Instantly writes spintax with a different marker. These lock down that it is
+ * normalised at the door, so every downstream reader keeps working on one
+ * syntax rather than learning a second.
+ */
+
+test("Instantly's {{RANDOM |...}} is read as a spintax group", () => {
+  assert.equal(countSpintaxGroups("{{RANDOM |Hi|Hello|Hey}} there"), 1);
+});
+
+test("THE KEYWORD IS NEVER A CHOICE", () => {
+  // Unnormalised, the parser matches the inner braces and treats "RANDOM " as
+  // the first option — so the word RANDOM renders into a real email.
+  const rolled = rollSpintax("{{RANDOM |Hi|Hello|Hey}} there", 7);
+  assert.ok(!/RANDOM/.test(rolled), rolled);
+  assert.ok(/^(Hi|Hello|Hey) there$/.test(rolled), rolled);
+});
+
+test("spacing around the marker does not matter", () => {
+  assert.equal(countSpintaxGroups("{{RANDOM|a|b}}"), 1);
+  assert.equal(countSpintaxGroups("{{ RANDOM |a|b}}"), 1);
+  assert.equal(countSpintaxGroups("{{random |a|b}}"), 1);
+});
+
+test("merge tags are not spintax", () => {
+  // 1,361 of 1,367 Instantly steps carry merge tags and no variation at all —
+  // counting {{firstName}} as a group would hide exactly that.
+  assert.equal(countSpintaxGroups("Hi {{firstName}}, from {{companyName}}"), 0);
+});
+
+test("EmailBison bodies are unaffected", () => {
+  assert.equal(countSpintaxGroups("{Quick question, |Just checking, }hello"), 1);
+  const rolled = rollSpintax("{Hi|Hello} there", 3);
+  assert.ok(/^(Hi|Hello) there$/.test(rolled), rolled);
+});
+
+test("an empty group leaves no stray braces", () => {
+  assert.ok(!/[{}]/.test(rollSpintax("{{RANDOM |}}x", 1)));
+});

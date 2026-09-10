@@ -46,7 +46,7 @@ export async function GET(
    * Sequence tab reads as "this campaign has no emails", which is false.
    */
   if (platform === "instantly") {
-    const [campaign, mapping, activity] = await Promise.all([
+    const [campaign, mapping, activity, steps] = await Promise.all([
       sb.from("instantly_campaigns").select("*").eq("id", id).eq("team_id", teamId).maybeSingle(),
       sb
         .from("instantly_campaign_clients")
@@ -60,6 +60,7 @@ export async function GET(
         .eq("campaign_ref", id)
         .order("id", { ascending: false })
         .limit(100),
+      sb.rpc("analytics_instantly_sequence", { p_team_id: teamId, p_campaign_id: id }),
     ]);
     if (campaign.error) {
       return NextResponse.json({ error: campaign.error.message }, { status: 500 });
@@ -68,6 +69,11 @@ export async function GET(
       return NextResponse.json({ error: "Campaign not found" }, { status: 404 });
     }
     const c = campaign.data as Record<string, unknown>;
+    const sequenceRows = (steps.data ?? []) as Array<{
+      id: number; step_order: number; email_subject: string | null;
+      email_body: string | null; wait_in_days: number | null;
+      is_variant: boolean; variant_from_step_id: number | null;
+    }>;
     return NextResponse.json({
       platform,
       campaign: {
@@ -75,14 +81,48 @@ export async function GET(
         // The page's shared vocabulary; Instantly reports an integer.
         status: instantlyStatusWord(Number(c.status)),
         total_leads: c.leads_count ?? null,
+        total_leads_contacted: c.contacted_count ?? null,
         lifetime_emails_sent: c.emails_sent ?? null,
+        lifetime_replied: c.reply_count ?? null,
         lifetime_unique_replies: c.reply_count_unique ?? null,
+        lifetime_bounced: c.bounced_count ?? null,
+        lifetime_unsubscribed: c.unsubscribed_count ?? null,
+        /*
+         * INTERESTED STAYS NULL. Instantly reports `opportunities`, which is a
+         * near neighbour and not the same thing — EmailBison's "interested" is
+         * a lead status a human set, an opportunity is a pipeline marker.
+         * Mapping one onto the other would put a number under a label it does
+         * not mean, which is worse than a dash.
+         */
+        lifetime_interested: null,
         clientId: mapping.data?.client_id ?? null,
         excluded: Boolean(mapping.data?.excluded),
       },
-      sequence: [],
-      variantCount: 0,
+      /*
+       * The sequence, in EmailBison's shape (087) so the Sequence tab, the
+       * spintax signal and Copy & Offer render it with no second code path.
+       * This was `[]` while nothing synced it, which is why those tabs were
+       * hidden — a gap that only existed because nothing had fetched it.
+       */
+      sequence: sequenceRows.map((r) => ({
+        id: Number(r.id),
+        stepOrder: Number(r.step_order),
+        subject: r.email_subject ?? "",
+        body: r.email_body ?? "",
+        waitInDays: r.wait_in_days ?? null,
+        isVariant: Boolean(r.is_variant),
+        variantFromStepId: r.variant_from_step_id ? Number(r.variant_from_step_id) : null,
+        threadReply: false,
+        attachments: [],
+      })),
+      variantCount: sequenceRows.filter((r) => r.is_variant).length,
       activity: activity.data ?? [],
+      /*
+       * Empty, and that is honest rather than lazy: Instantly reports no
+       * per-step send counts, so "which steps have sent" is unknown. Listing
+       * them all would let the editor offer a destructive edit on a step that
+       * has already gone out.
+       */
       sentStepIds: [],
     });
   }

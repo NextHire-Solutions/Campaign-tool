@@ -14,6 +14,39 @@
 
 const GROUP = /\{([^{}]*\|[^{}]*)\}/;
 
+/*
+ * Instantly writes the same idea with a different marker:
+ *
+ *     {{RANDOM |Hi |Hello |Hey}}      Instantly
+ *     {Hi|Hello|Hey}                  EmailBison
+ *
+ * Left as-is, the existing parser matches the INNER braces and reads "RANDOM "
+ * as the first option — so a preview would render the word RANDOM into the
+ * email and the group counter would count a group whose first choice is a
+ * keyword. Normalising at the door means every downstream reader — the
+ * preview, the counter, the variation estimate, the un-spintaxed signal —
+ * keeps working on one syntax rather than learning a second.
+ */
+const INSTANTLY_GROUP = /\{\{\s*RANDOM\s*\|([^{}]*)\}\}/gi;
+
+/**
+ * Rewrites Instantly's `{{RANDOM |a|b}}` into `{a|b}`.
+ *
+ * Safe on EmailBison bodies, which contain no such marker, so callers can apply
+ * it unconditionally instead of deciding per platform.
+ */
+export function normaliseSpintax(body: string): string {
+  return body.replace(INSTANTLY_GROUP, (_match, inner: string) => {
+    const options = String(inner)
+      .split("|")
+      .map((o) => o.trim())
+      .filter((o) => o.length > 0);
+    // A group with nothing to choose between is not a group. Emitting `{}` here
+    // would leave a literal brace pair in the rendered email.
+    return options.length ? `{${options.join("|")}}` : "";
+  });
+}
+
 /** Small deterministic PRNG — mulberry32. Same seed, same output. */
 function rng(seed: number): () => number {
   let a = seed >>> 0;
@@ -35,7 +68,7 @@ function rng(seed: number): () => number {
  */
 export function rollSpintax(body: string, seed = 1): string {
   const next = rng(seed);
-  let out = body;
+  let out = normaliseSpintax(body);
 
   for (let guard = 0; guard < 200; guard++) {
     const match = GROUP.exec(out);
@@ -50,7 +83,7 @@ export function rollSpintax(body: string, seed = 1): string {
 
 /** Number of spintax groups, for the "N variations" hint. */
 export function countSpintaxGroups(body: string): number {
-  return (body.match(/\{[^{}]*\|[^{}]*\}/g) ?? []).length;
+  return (normaliseSpintax(body).match(/\{[^{}]*\|[^{}]*\}/g) ?? []).length;
 }
 
 /**
@@ -59,7 +92,7 @@ export function countSpintaxGroups(body: string): number {
  * is the point of spintax and worth surfacing.
  */
 export function countVariations(body: string): number {
-  const groups = body.match(/\{[^{}]*\|[^{}]*\}/g) ?? [];
+  const groups = normaliseSpintax(body).match(/\{[^{}]*\|[^{}]*\}/g) ?? [];
   return groups.reduce(
     (total, g) => total * g.slice(1, -1).split("|").length,
     1,

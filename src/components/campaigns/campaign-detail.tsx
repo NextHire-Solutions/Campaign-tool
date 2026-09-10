@@ -19,7 +19,7 @@ import {
 import { CopyTagsPanel } from "@/components/campaigns/copy-tags-panel";
 import { CampaignLeads } from "@/components/campaigns/campaign-leads";
 import { OfferPicker } from "@/components/campaigns/offer-picker";
-import { fullNumber, percent } from "@/lib/analytics/format.ts";
+import { DASH, fullNumber, percent } from "@/lib/analytics/format.ts";
 import { STATUS_TONE, canApply, isKnownStatus } from "@/lib/campaigns/status.ts";
 import { cn } from "@/lib/utils";
 
@@ -91,13 +91,25 @@ interface DetailResponse {
 const TABS = ["Overview", "Leads", "Sequence", "Copy & Offer", "Settings", "Activity"] as const;
 
 /*
- * Which tabs an Instantly campaign has, and the omissions are real rather than
- * unfinished. Sequence and Copy & Offer read sequence bodies we do not sync;
- * Settings writes EmailBison's campaign-update endpoint. Drawing them empty
- * would say "this campaign has no emails", which is false — so they are hidden
- * and the ones that work are shown.
+ * Which tabs an Instantly campaign has.
+ *
+ * Sequence and Copy & Offer are here now that 087 syncs the steps — they were
+ * hidden for a gap that existed only because nothing had fetched the bodies,
+ * which the API returns on the campaign object all along.
+ *
+ * SETTINGS REMAINS OUT, and that one is a real difference rather than pending
+ * work: it writes EmailBison's campaign-update endpoint field by field, and
+ * Instantly's equivalent is a PATCH with a different body. Showing it would
+ * offer controls whose saves would fail — the "shows the change as saved when
+ * it wasn't" that spec §9.5 forbids.
  */
-const INSTANTLY_TABS = new Set<(typeof TABS)[number]>(["Overview", "Leads", "Activity"]);
+const INSTANTLY_TABS = new Set<(typeof TABS)[number]>([
+  "Overview",
+  "Leads",
+  "Sequence",
+  "Copy & Offer",
+  "Activity",
+]);
 type Tab = (typeof TABS)[number];
 
 export function CampaignDetail({ id }: { id: string }) {
@@ -289,7 +301,7 @@ export function CampaignDetail({ id }: { id: string }) {
       </div>
 
       <div className="min-h-0 flex-1 overflow-auto p-6">
-        {activeTab === "Overview" ? <Overview campaign={campaign} /> : null}
+        {activeTab === "Overview" ? <Overview campaign={campaign} platform={data.platform} /> : null}
         {activeTab === "Leads" ? (
           <CampaignLeads campaignId={String(campaign.id)} campaignName={campaign.name} />
         ) : null}
@@ -400,7 +412,14 @@ function StatusChip({ status }: { status: string }) {
   );
 }
 
-function Overview({ campaign }: { campaign: Campaign }) {
+function Overview({
+  campaign,
+  platform,
+}: {
+  campaign: Campaign;
+  platform?: "emailbison" | "instantly";
+}) {
+  const platformName = platform === "instantly" ? "Instantly" : "EmailBison";
   const sent = campaign.lifetime_emails_sent ?? 0;
 
   /*
@@ -409,11 +428,18 @@ function Overview({ campaign }: { campaign: Campaign }) {
    * them relative to the largest value would make a 1% reply rate look like a
    * full bar whenever nothing else happened.
    */
+  /*
+   * `?? 0` REMOVED, deliberately (rule 1). Instantly reports no "interested"
+   * count at all, and this rendered it as "0 — 0.00%" beside a real reply
+   * count: a confident claim that nobody was interested, made about a number
+   * the platform never sent. A null now falls through to DASH, and its bar is
+   * simply not drawn.
+   */
   const funnel = [
     { label: "Sent", value: sent, tone: "bg-[#2a78d6]" },
-    { label: "Replied", value: campaign.lifetime_unique_replies ?? 0, tone: "bg-[#eb6834]" },
-    { label: "Interested", value: campaign.lifetime_interested ?? 0, tone: "bg-[#008300]" },
-    { label: "Bounced", value: campaign.lifetime_bounced ?? 0, tone: "bg-[#e34948]" },
+    { label: "Replied", value: campaign.lifetime_unique_replies ?? null, tone: "bg-[#eb6834]" },
+    { label: "Interested", value: campaign.lifetime_interested ?? null, tone: "bg-[#008300]" },
+    { label: "Bounced", value: campaign.lifetime_bounced ?? null, tone: "bg-[#e34948]" },
   ];
 
   const stats = [
@@ -460,25 +486,34 @@ function Overview({ campaign }: { campaign: Campaign }) {
             <div key={stage.label} className="flex items-center gap-3">
               <span className="w-20 shrink-0 text-xs text-muted-foreground">{stage.label}</span>
               <div className="h-4 min-w-0 flex-1 overflow-hidden rounded bg-muted">
+                {/* No bar for a value the platform never reported — a
+                    zero-width bar and a genuine zero look identical, and only
+                    one of them is a fact. */}
                 <div
                   className={cn("h-full rounded", stage.tone)}
-                  style={{ width: sent ? `${(stage.value / sent) * 100}%` : "0%" }}
+                  style={{
+                    width:
+                      sent && stage.value !== null
+                        ? `${(stage.value / sent) * 100}%`
+                        : "0%",
+                  }}
                 />
               </div>
               <span className="tnum w-20 shrink-0 text-right text-xs">
                 {fullNumber(stage.value)}
               </span>
               <span className="tnum w-14 shrink-0 text-right text-xs text-muted-foreground">
-                {sent ? percent(stage.value / sent, 2) : "-"}
+                {sent && stage.value !== null ? percent(stage.value / sent, 2) : DASH}
               </span>
             </div>
           ))}
         </div>
-        {/* These are cumulative counters from EmailBison, not the day-based
-            figures the Analytics tab computes. Saying so stops the two being
-            read as a discrepancy. */}
+        {/* These are cumulative counters from the SENDING PLATFORM, not the
+            day-based figures the Analytics tab computes. Saying so stops the
+            two being read as a discrepancy — and naming the right platform
+            matters now that half these campaigns are not EmailBison's. */}
         <p className="mt-2 text-[11px] text-muted-foreground">
-          Lifetime totals as EmailBison reports them. For a date range, use Analytics.
+          Lifetime totals as {platformName} reports them. For a date range, use Analytics.
         </p>
       </section>
 

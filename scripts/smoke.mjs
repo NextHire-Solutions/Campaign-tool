@@ -381,10 +381,18 @@ console.log("");
       const seen = (await evaluate(`document.body.innerText`) || "").slice(0, 160).replace(/\s+/g, " ");
       fail("the Instantly campaign page renders", `no tabs drawn — page reads: ${seen}`);
     }
-    else if (tabs.includes("Sequence") || tabs.includes("Settings")) {
-      fail("tabs are gated for Instantly", `showed ${tabs.join(", ")}`);
+    /*
+     * Sequence and Copy & Offer are EXPECTED now that the steps are synced —
+     * they were hidden for a gap that only existed because nothing fetched the
+     * bodies. Settings stays out: it writes EmailBison's update endpoint field
+     * by field, so offering it would show saves that fail.
+     */
+    else if (tabs.includes("Settings")) {
+      fail("Settings stays hidden for Instantly", `showed ${tabs.join(", ")}`);
+    } else if (!tabs.includes("Sequence")) {
+      fail("Instantly campaigns have a Sequence tab", `showed ${tabs.join(", ")}`);
     } else {
-      pass("tabs are gated for Instantly", tabs.join(", "));
+      pass("tabs are right for Instantly", tabs.join(", "));
       await clickText("Leads");
       // The table mounts after its query resolves; a click is not a render.
       for (let i = 0; i < 20; i++) {

@@ -5,6 +5,8 @@ import { AUTH_COOKIE, verifySessionToken } from "@/lib/auth";
 import { createEmailBisonClient } from "@/lib/emailbison/client.ts";
 import { describeEmailBisonError } from "@/lib/emailbison/errors.ts";
 import { getSupabase } from "@/lib/supabase/server";
+import { createInstantlyClient } from "@/lib/instantly/client.ts";
+import { platformOfId } from "@/lib/campaigns/campaign-id.ts";
 
 /*
  * Saving an edited sequence (spec §9.3).
@@ -43,7 +45,11 @@ const Step = z.object({
 });
 
 const Body = z.object({
-  sequenceId: z.number().int().positive(),
+  /*
+   * EmailBison addresses a sequence by id. Instantly has none — its campaign
+   * holds one sequence — so this is optional and ignored there.
+   */
+  sequenceId: z.number().int().positive().optional(),
   /** In final display order. `order` is derived from position, never trusted. */
   steps: z.array(Step).max(100),
 });
@@ -71,12 +77,27 @@ export async function PUT(
   }
 
   const { id } = await params;
-  const campaignId = Number(id);
-  if (!Number.isInteger(campaignId) || campaignId <= 0) {
+  const platform = platformOfId(id);
+  if (!platform) {
     return NextResponse.json({ error: "Invalid campaign id" }, { status: 400 });
   }
+  const campaignId = platform === "emailbison" ? Number(id) : 0;
 
   const parsed = Body.safeParse(await request.json().catch(() => null));
+  if (parsed.success && platform === "instantly") {
+    return saveInstantlySequence(id, parsed.data.steps, session.email);
+  }
+  /*
+   * EmailBison addresses the sequence by id and cannot proceed without one.
+   * Refused explicitly rather than coerced: a missing id here means the editor
+   * sent an Instantly-shaped payload at an EmailBison campaign.
+   */
+  if (parsed.success && parsed.data.sequenceId === undefined) {
+    return NextResponse.json(
+      { error: "sequenceId is required for an EmailBison campaign." },
+      { status: 400 },
+    );
+  }
   if (!parsed.success) {
     return NextResponse.json(
       { error: "Invalid sequence", detail: parsed.error.flatten() },
@@ -190,7 +211,7 @@ export async function PUT(
   try {
     // 1. Updates first — a reorder survives a later failure.
     if (updates.length) {
-      await eb.updateSequenceSteps(sequenceId, campaign.name, updates);
+      await eb.updateSequenceSteps(sequenceId!, campaign.name, updates);
       applied.updated = updates.length;
     }
     // 2. Then additions.
@@ -239,4 +260,113 @@ export async function PUT(
   });
 
   return NextResponse.json({ ok: true, ...applied });
+}
+
+
+/*
+ * Saving a sequence to Instantly.
+ *
+ * WHOLE-SEQUENCE REPLACE, not a diff. Instantly has no per-step endpoints at
+ * all — `PATCH /campaigns/{id}` takes the entire `sequences` array — so the
+ * three-call add/update/delete dance EmailBison needs has no counterpart here.
+ * That makes this simpler and also strictly more dangerous: a save sends
+ * everything, so a partial payload silently deletes the rest. The editor always
+ * sends the full sequence, which is the only reason this is safe.
+ *
+ * A VARIANT IS A VARIANT OF ITS STEP. Instantly nests them — one step, many
+ * variants — where EmailBison flattens them into sibling rows flagged
+ * `variant`. The editor speaks EmailBison's shape, so the flat list is folded
+ * back into nested steps here rather than teaching the editor a second model.
+ */
+async function saveInstantlySequence(
+  campaignId: string,
+  steps: Array<z.infer<typeof Step>>,
+  actor: string,
+) {
+  const client = createInstantlyClient();
+  const sb = getSupabase();
+
+  if (!steps.length) {
+    return NextResponse.json(
+      { error: "A sequence must have at least one step. Delete the campaign instead." },
+      { status: 400 },
+    );
+  }
+
+  /*
+   * Fold the flat list into Instantly's nesting. A `variant` row belongs to the
+   * most recent non-variant step; a variant with no step before it is a bug in
+   * the caller, so it starts its own step rather than being dropped.
+   */
+  const nested: Array<{ type: string; delay: number; variants: Array<{ subject: string; body: string }> }> = [];
+  for (const step of steps) {
+    const variant = { subject: step.email_subject, body: step.email_body };
+    if (step.variant && nested.length) {
+      nested[nested.length - 1].variants.push(variant);
+    } else {
+      nested.push({ type: "email", delay: step.wait_in_days, variants: [variant] });
+    }
+  }
+
+  try {
+    await client.updateCampaign(campaignId, { sequences: [{ steps: nested }] });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    await sb.from("campaign_audit_log").insert({
+      team_id: TEAM_ID(),
+      campaign_id: null,
+      platform: "instantly",
+      campaign_ref: campaignId,
+      campaign_name: campaignId,
+      action: "save-sequence",
+      actor,
+      status: "error",
+      error: message,
+      before_state: { steps: steps.length },
+      after_state: null,
+    });
+    return NextResponse.json({ error: message }, { status: 502 });
+  }
+
+  /*
+   * Write through to our cache so the tab does not snap back to the old copy
+   * until the hourly sync catches up — the same reason the action route writes
+   * status through.
+   */
+  await sb.from("instantly_sequence_steps").delete().eq("campaign_id", campaignId);
+  const rows = nested.flatMap((step, stepIndex) =>
+    step.variants.map((variant, variantIndex) => ({
+      campaign_id: campaignId,
+      team_id: TEAM_ID(),
+      step_order: stepIndex + 1,
+      variant_index: variantIndex,
+      is_variant: variantIndex > 0,
+      email_subject: variant.subject,
+      email_body: variant.body,
+      wait_in_days: step.delay,
+      synced_at: new Date().toISOString(),
+    })),
+  );
+  if (rows.length) await sb.from("instantly_sequence_steps").insert(rows);
+
+  await sb.from("campaign_audit_log").insert({
+    team_id: TEAM_ID(),
+    campaign_id: null,
+    platform: "instantly",
+    campaign_ref: campaignId,
+    campaign_name: campaignId,
+    action: "save-sequence",
+    actor,
+    status: "ok",
+    error: null,
+    before_state: { steps: steps.length },
+    after_state: { steps: nested.length, variants: rows.length - nested.length },
+  });
+
+  return NextResponse.json({
+    ok: true,
+    platform: "instantly",
+    steps: nested.length,
+    variants: rows.length - nested.length,
+  });
 }

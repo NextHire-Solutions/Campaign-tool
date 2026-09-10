@@ -88,6 +88,8 @@ export const SCHEDULE = [
    * without holding the lock for long.
    */
   { job: "sync-instantly-leads", everyMinutes: 30 },
+  // One call per campaign (~95s). Copy changes rarely; hourly is ample.
+  { job: "sync-instantly-sequences", everyMinutes: 60 },
   // Costs nothing upstream — it only re-reads names we already hold.
   { job: "sync-instantly-clients", everyMinutes: 60 },
   // Asks which campaigns were active in the window first, so it makes one call

@@ -631,6 +631,102 @@ export const syncInstantlyLeads: JobFn = async ({ cursorText }): Promise<JobResu
   };
 };
 
+/*
+ * Sequence steps, from each campaign's own record.
+ *
+ * One call per campaign (318 of them, ~95s) because the sequence only comes
+ * back on the single-campaign GET — the list endpoint omits it. Rows are
+ * REPLACED per campaign rather than upserted: a step deleted upstream has to
+ * disappear here too, and an upsert would leave it behind forever.
+ */
+export const syncInstantlySequences: JobFn = async (): Promise<JobResult> => {
+  const client = createInstantlyClient();
+  const teamId = TEAM_ID();
+  const sb = getSupabase();
+
+  const { data: campaigns } = await sb
+    .from("instantly_campaigns")
+    .select("id")
+    .eq("team_id", teamId)
+    .is("archived_at", null);
+
+  const ids = ((campaigns ?? []) as Array<{ id: string }>).map((c) => c.id);
+  const rows: Record<string, unknown>[] = [];
+  let calls = 0;
+  let withSequence = 0;
+
+  for (const id of ids) {
+    const campaign = await client.getCampaign(id);
+    calls++;
+    const sequences = (campaign?.sequences ?? []) as Array<{
+      steps?: Array<{
+        delay?: number;
+        delay_unit?: string;
+        variants?: Array<{ subject?: string; body?: string }>;
+      }>;
+    }>;
+    const steps = sequences[0]?.steps ?? [];
+    if (steps.length) withSequence++;
+
+    steps.forEach((step, stepIndex) => {
+      const variants = step.variants ?? [];
+      /*
+       * A step with no variants still has copy in Instantly's UI; storing
+       * nothing would make the Sequence tab show an empty step rather than the
+       * email that is actually sending.
+       */
+      const list = variants.length ? variants : [{ subject: "", body: "" }];
+      list.forEach((variant, variantIndex) => {
+        rows.push({
+          campaign_id: id,
+          team_id: teamId,
+          step_order: stepIndex + 1,
+          variant_index: variantIndex,
+          // Variant 0 IS the step; 1+ are its A/B alternatives, matching how
+          // EmailBison models them.
+          is_variant: variantIndex > 0,
+          email_subject: variant.subject ?? null,
+          email_body: variant.body ?? null,
+          wait_in_days: toDays(step.delay, step.delay_unit),
+          synced_at: new Date().toISOString(),
+        });
+      });
+    });
+  }
+
+  /*
+   * Replace, not merge. Deleting per campaign first is what makes a removed
+   * step disappear — chunked because `.in()` over 318 uuids is a long URL.
+   */
+  for (let i = 0; i < ids.length; i += 100) {
+    await sb
+      .from("instantly_sequence_steps")
+      .delete()
+      .eq("team_id", teamId)
+      .in("campaign_id", ids.slice(i, i + 100));
+  }
+  if (rows.length) {
+    await chunkUpsert("instantly_sequence_steps", rows, "campaign_id,step_order,variant_index");
+  }
+
+  return {
+    rowsWritten: rows.length,
+    apiCalls: calls,
+    detail: { campaigns: ids.length, withSequence, steps: rows.length },
+  };
+};
+
+/** Instantly states a delay with a unit; one column means one thing. */
+function toDays(delay: number | undefined, unit: string | undefined): number | null {
+  if (delay === undefined || delay === null) return null;
+  switch ((unit ?? "days").toLowerCase()) {
+    case "minutes": return 0;
+    case "hours":   return Math.round(delay / 24);
+    case "weeks":   return delay * 7;
+    default:        return delay;
+  }
+}
+
 // --- per-inbox sending figures ------------------------------------------------
 
 /**
