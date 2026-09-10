@@ -74,6 +74,8 @@ interface Activity {
 }
 
 interface DetailResponse {
+  /** Absent on EmailBison responses, which predate the field. */
+  platform?: "emailbison" | "instantly";
   campaign: Campaign;
   sequence: Step[];
   variantCount: number;
@@ -87,11 +89,26 @@ interface DetailResponse {
  * where you had to expand a step to reach it. Its own tab, per the spec.
  */
 const TABS = ["Overview", "Leads", "Sequence", "Copy & Offer", "Settings", "Activity"] as const;
+
+/*
+ * Which tabs an Instantly campaign has, and the omissions are real rather than
+ * unfinished. Sequence and Copy & Offer read sequence bodies we do not sync;
+ * Settings writes EmailBison's campaign-update endpoint. Drawing them empty
+ * would say "this campaign has no emails", which is false — so they are hidden
+ * and the ones that work are shown.
+ */
+const INSTANTLY_TABS = new Set<(typeof TABS)[number]>(["Overview", "Leads", "Activity"]);
 type Tab = (typeof TABS)[number];
 
-export function CampaignDetail({ id }: { id: number }) {
+export function CampaignDetail({ id }: { id: string }) {
   const queryClient = useQueryClient();
   const [tab, setTab] = useState<Tab>("Overview");
+  /*
+   * The tab list depends on the platform, and the SELECTED tab is corrected
+   * during render rather than in an effect — the React Compiler lint forbids
+   * setState in an effect, and deriving it here means the page can never paint
+   * a tab that does not exist for this campaign.
+   */
 
   const { data, isLoading, error } = useQuery<DetailResponse>({
     queryKey: ["campaign", id],
@@ -148,6 +165,16 @@ export function CampaignDetail({ id }: { id: number }) {
   }
 
   const { campaign, sequence, variantCount, activity, sentStepIds } = data;
+
+  /*
+   * The tab list depends on the platform, and the SELECTED tab is corrected
+   * during render rather than in an effect — the React Compiler lint forbids
+   * setState in an effect, and deriving it here means the page can never paint
+   * a tab this campaign does not have.
+   */
+  const isInstantly = data.platform === "instantly";
+  const visibleTabs = TABS.filter((t) => !isInstantly || INSTANTLY_TABS.has(t));
+  const activeTab: Tab = visibleTabs.includes(tab) ? tab : "Overview";
 
   // Shown only when it can actually be applied. Neither → no primary button.
   const primary = canApply("pause", campaign.status)
@@ -241,14 +268,14 @@ export function CampaignDetail({ id }: { id: number }) {
       </header>
 
       <div className="flex shrink-0 gap-0.5 border-b bg-card px-8">
-        {TABS.map((t) => (
+        {visibleTabs.map((t) => (
           <button
             key={t}
             type="button"
             onClick={() => setTab(t)}
             className={cn(
               "-mb-px border-b-2 px-3 py-2 text-xs transition-colors",
-              tab === t
+              activeTab === t
                 ? "border-foreground font-medium text-foreground"
                 : "border-transparent text-muted-foreground hover:text-foreground",
             )}
@@ -262,11 +289,11 @@ export function CampaignDetail({ id }: { id: number }) {
       </div>
 
       <div className="min-h-0 flex-1 overflow-auto p-6">
-        {tab === "Overview" ? <Overview campaign={campaign} /> : null}
-        {tab === "Leads" ? (
-          <CampaignLeads campaignId={campaign.id} campaignName={campaign.name} />
+        {activeTab === "Overview" ? <Overview campaign={campaign} /> : null}
+        {activeTab === "Leads" ? (
+          <CampaignLeads campaignId={String(campaign.id)} campaignName={campaign.name} />
         ) : null}
-        {tab === "Sequence" ? (
+        {activeTab === "Sequence" ? (
           <Sequence
             steps={sequence}
             campaignId={campaign.id}
@@ -275,11 +302,11 @@ export function CampaignDetail({ id }: { id: number }) {
             sentStepIds={sentStepIds ?? []}
           />
         ) : null}
-        {tab === "Copy & Offer" ? (
+        {activeTab === "Copy & Offer" ? (
           <CopyAndOffer campaignId={campaign.id} steps={sequence} />
         ) : null}
-        {tab === "Settings" ? <Settings campaign={campaign} /> : null}
-        {tab === "Activity" ? <ActivityLog rows={activity} /> : null}
+        {activeTab === "Settings" ? <Settings campaign={campaign} /> : null}
+        {activeTab === "Activity" ? <ActivityLog rows={activity} /> : null}
       </div>
     </div>
   );

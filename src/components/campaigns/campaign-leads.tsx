@@ -56,7 +56,8 @@ export function CampaignLeads({
   campaignId,
   campaignName = "this campaign",
 }: {
-  campaignId: number;
+  /** Text: an EmailBison bigint or an Instantly uuid. */
+  campaignId: string;
   campaignName?: string;
 }) {
   const [search, setSearch] = useState("");
@@ -74,7 +75,7 @@ export function CampaignLeads({
    * and re-fetching. Selecting 40 on page 1, paging away and back must not
    * silently select a different 40.
    */
-  const [selected, setSelected] = useState<Set<number>>(new Set());
+  const [selected, setSelected] = useState<Set<number | string>>(new Set());
   const [confirming, setConfirming] = useState(false);
   const [loadingAll, setLoadingAll] = useState(false);
 

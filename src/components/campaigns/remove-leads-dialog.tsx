@@ -43,9 +43,15 @@ export function RemoveLeadsDialog({
   onOpenChange,
   onDone,
 }: {
-  campaignId: number;
+  /** Text: an EmailBison bigint or an Instantly uuid. */
+  campaignId: string;
   campaignName: string;
-  leadIds: number[];
+  /*
+   * Integers for EmailBison, uuid strings for Instantly. Passed through as
+   * they came rather than coerced — the route refuses a list whose ids do not
+   * match the campaign's platform, and coercing here would defeat that check.
+   */
+  leadIds: Array<number | string>;
   open: boolean;
   onOpenChange: (open: boolean) => void;
   onDone: () => void;

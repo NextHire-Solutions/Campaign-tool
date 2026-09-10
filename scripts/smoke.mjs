@@ -326,6 +326,56 @@ if (!(await clickText("Instantly"))) {
  * an API that returns 501 rows tells you nothing about whether the table drew
  * them.
  */
+/*
+ * An Instantly campaign's Leads tab, on the rendered page. The API can return
+ * 12,080 leads and still leave the tab blank if the component never asked for
+ * them, so this asserts on drawn rows.
+ */
+console.log("");
+{
+  const cookie = `bsa_session=${mintToken()}`;
+  const list = await (await fetch(`${BASE}/api/campaigns?limit=400&platforms=instantly`, { headers: { cookie } })).json();
+  let target = null;
+  for (const c of (list.items ?? []).slice(0, 30)) {
+    const r = await (await fetch(`${BASE}/api/campaigns/${c.id}/leads?page=1`, { headers: { cookie } })).json();
+    if (r.total > 0) { target = { c, total: r.total }; break; }
+  }
+  if (!target) {
+    fail("an Instantly campaign has leads", "none of the first 30 had any");
+  } else {
+    await goto(`/campaigns/${target.c.id}`);
+    /*
+     * textContent, not innerText. innerText depends on layout and came back
+     * empty for these buttons in headless, so a page that was rendering
+     * perfectly reported "no tabs drawn". The page text in the failure message
+     * is what showed it — the campaign name and status were right there.
+     */
+    const tabs = await evaluate(`
+      Array.from(document.querySelectorAll('button'))
+        .map(b => (b.textContent || '').trim())
+        .filter(t => ['Overview','Leads','Sequence','Copy & Offer','Settings','Activity'].includes(t))
+    `);
+    if (!tabs?.length) {
+      const seen = (await evaluate(`document.body.innerText`) || "").slice(0, 160).replace(/\s+/g, " ");
+      fail("the Instantly campaign page renders", `no tabs drawn — page reads: ${seen}`);
+    }
+    else if (tabs.includes("Sequence") || tabs.includes("Settings")) {
+      fail("tabs are gated for Instantly", `showed ${tabs.join(", ")}`);
+    } else {
+      pass("tabs are gated for Instantly", tabs.join(", "));
+      await clickText("Leads");
+      // The table mounts after its query resolves; a click is not a render.
+      for (let i = 0; i < 20; i++) {
+        await new Promise((r) => setTimeout(r, 400));
+        if (await evaluate(`document.querySelectorAll('table tbody tr').length`)) break;
+      }
+      const rows = await evaluate(`document.querySelectorAll('table tbody tr').length`);
+      if (rows > 0) pass("the Instantly Leads tab draws rows", `${rows} of ${target.total}`);
+      else fail("the Instantly Leads tab draws rows", `0 drawn, API says ${target.total}`);
+    }
+  }
+}
+
 console.log("");
 {
   await goto("/campaigns");
