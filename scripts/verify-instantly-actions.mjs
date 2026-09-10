@@ -20,10 +20,16 @@ const env = Object.fromEntries(
 const KEY = env.INSTANTLY_API_KEY, IB = env.INSTANTLY_BASE_URL || "https://api.instantly.ai";
 const APP = process.env.BASE ?? "http://localhost:3000";
 
-// Minted from the same secret the app verifies with, so no token file is needed.
-const email = env.AUTH_USERS.split(/[\n,]+/)[0].split(":")[0].trim();
-const payload = `${Buffer.from(email).toString("base64url")}.${Date.now() + 3_600_000}`;
-const TOKEN = `${payload}.${createHmac("sha256", env.AUTH_SECRET).update(payload).digest("hex")}`;
+/*
+ * Minted from .env.local by default. SMOKE_TOKEN overrides it, which is how
+ * this runs against production — that deployment has a different AUTH_SECRET,
+ * and a locally-minted token there is simply a 401 on every call.
+ */
+const TOKEN = process.env.SMOKE_TOKEN ?? (() => {
+  const email = env.AUTH_USERS.split(/[\n,]+/)[0].split(":")[0].trim();
+  const payload = `${Buffer.from(email).toString("base64url")}.${Date.now() + 3_600_000}`;
+  return `${payload}.${createHmac("sha256", env.AUTH_SECRET).update(payload).digest("hex")}`;
+})();
 
 const inst = async (m, p, b) => {
   const r = await fetch(`${IB}${p}`, { method: m, headers: { Authorization: `Bearer ${KEY}`, "Content-Type": "application/json" }, ...(b === undefined ? {} : { body: JSON.stringify(b) }) });
@@ -39,6 +45,16 @@ const act = async (action, targets, confirm = true) => {
   return { status: r.status, body: await r.json() };
 };
 
+{
+  // One auth check up front. Without it a bad token reports every check as
+  // "undefined", which reads as a broken feature rather than a missing cookie.
+  const probe = await fetch(`${APP}/api/campaigns?limit=1`, { headers: { cookie: `bsa_session=${TOKEN}` } });
+  if (probe.status === 401) {
+    console.error(`\n  Unauthorized against ${APP}. Set SMOKE_TOKEN for a deployment whose AUTH_SECRET differs from .env.local.\n`);
+    process.exit(2);
+  }
+}
+
 let pass = 0, fail = 0;
 const ok = (n, d = "") => { pass++; console.log(`  ok    ${n}${d ? " — " + d : ""}`); };
 const no = (n, w) => { fail++; console.log(`  FAIL  ${n} — ${w}`); };
@@ -50,7 +66,15 @@ try {
   console.log(`  campaign: ${id}\n`);
 
   // Sync it into our cache so the dispatcher can find it.
-  const cronSecret = env.CRON_SECRET;
+  /*
+   * Same override as the session token, for the same reason: a deployment has
+   * its own CRON_SECRET, and without it the sync never runs, the new campaign
+   * never reaches the cache, and every action is refused with "Unknown
+   * campaign" — which looks like a dispatcher bug and is really a missing
+   * secret. (That refusal is the dispatcher's guard doing its job: it will not
+   * act on a campaign whose status it cannot check.)
+   */
+  const cronSecret = process.env.CRON_SECRET ?? env.CRON_SECRET;
   await fetch(`${APP}/api/cron/sync-instantly-campaigns`, { method: "POST", headers: { Authorization: `Bearer ${cronSecret}` } });
 
   const target = [{ platform: "instantly", id }];
