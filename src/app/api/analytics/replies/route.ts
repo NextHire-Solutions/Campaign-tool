@@ -1,6 +1,7 @@
 import { NextResponse, type NextRequest } from "next/server";
 import { getSupabase } from "@/lib/supabase/server";
 import { resolveFilters, toISODate } from "@/lib/analytics/query-params.ts";
+import { resolvePlatformScope } from "@/lib/analytics/platform-scope.ts";
 
 export const dynamic = "force-dynamic";
 
@@ -55,6 +56,87 @@ export async function GET(request: NextRequest) {
   const clientIds = filters.clientIds.length ? filters.clientIds : null;
   const campaignIds = filters.campaignIds.length ? filters.campaignIds : null;
   const sb = getSupabase();
+
+  /*
+   * The platform filter was ignored here too, so the cards described
+   * EmailBison's repliers whatever the filter said.
+   *
+   * FOUR OF THE EIGHT DIMENSIONS DO NOT EXIST ON INSTANTLY. Location, sales
+   * volume, MLS and current brokerage are EmailBison LEAD ATTRIBUTES from an
+   * enriched import; Instantly's leads carry a name, a company and a domain.
+   * Those cards report themselves unavailable rather than borrowing
+   * EmailBison's people, which is the substitution this whole tab exists to
+   * prevent.
+   */
+  const scope = resolvePlatformScope({
+    platforms: filters.platforms,
+    campaignIds: filters.campaignIds,
+  });
+  const INSTANTLY_DIMENSIONS = new Set(["brokerage", "company", "esp", "mailbox_kind"]);
+
+  if (scope.instantly && !scope.emailbison) {
+    const keys = [
+      { key: "brokerage", label: "Brokerage (client)" },
+      { key: "company", label: "Current brokerage" },
+      { key: "esp", label: "Email provider" },
+      { key: "mailbox_kind", label: "Personal vs work email" },
+      { key: "location", label: "Location" },
+      { key: "sales_volume", label: "Sales volume" },
+      { key: "mls", label: "MLS" },
+      { key: "top_city", label: "Top city" },
+    ];
+    const cards = await Promise.all(
+      keys.map(async (d) => {
+        if (!INSTANTLY_DIMENSIONS.has(d.key)) {
+          return {
+            key: d.key,
+            label: d.label,
+            bucket: null,
+            rows: [],
+            total: 0,
+            groupCount: 0,
+            shown: 0,
+            unknown: 0,
+            unavailable: "Instantly does not report this lead attribute",
+          };
+        }
+        const { data, error } = await sb.rpc("analytics_instantly_reply_breakdown", {
+          p_team_id: teamId,
+          p_from: filters.from,
+          p_to: filters.to,
+          p_dimension: d.key,
+          p_client_ids: clientIds,
+          p_limit: 12,
+        });
+        if (error) throw new Error(`${d.key}: ${error.message}`);
+        const rows = ((data ?? []) as BreakdownRow[]).map((r) => ({
+          value: r.value,
+          replies: Number(r.replies),
+          // Null, not 0: MasterInbox labels never reach an Instantly reply, so
+          // a 0 would claim these replies were judged and found unpromising.
+          positive: null as number | null,
+        }));
+        const total = rows.reduce((n, r) => n + r.replies, 0);
+        return {
+          key: d.key,
+          label: d.label,
+          bucket: null,
+          rows,
+          total,
+          groupCount: rows.length,
+          shown: total,
+          unknown: rows.find((r) => r.value === "Unknown")?.replies ?? 0,
+        };
+      }),
+    );
+    return NextResponse.json({
+      platform: "instantly",
+      positiveOnly,
+      breakdowns: cards,
+      /* Positive has no meaning here; the UI hides its toggle. */
+      positiveAvailable: false,
+    });
+  }
 
   try {
     const { data: dims, error: dimError } = await sb.rpc("analytics_reply_dimensions", {

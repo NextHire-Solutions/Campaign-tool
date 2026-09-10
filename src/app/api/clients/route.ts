@@ -15,10 +15,18 @@ export async function GET() {
   const sb = getSupabase();
   const teamId = TEAM_ID();
 
-  const [clients, mappings, campaigns] = await Promise.all([
+  const [clients, mappings, campaigns, instantlyMappings, instantlyCampaigns] = await Promise.all([
     sb.from("clients").select("id, name, slug, aliases, match_mode, active").eq("team_id", teamId).order("name"),
     sb.from("campaign_clients").select("campaign_id, client_id, match_method, matched_on, ambiguous, excluded"),
     sb.from("campaigns").select("id, name, status, lifetime_emails_sent").eq("team_id", teamId),
+    /*
+     * INSTANTLY'S MAPPINGS TOO. This counted EmailBison campaigns only, so
+     * Bastion Realty South read 10 against a real 26 and The Keyes Company 9
+     * against 38 — a client page understating most clients by more than half,
+     * with nothing on screen to suggest it.
+     */
+    sb.from("instantly_campaign_clients").select("campaign_id, client_id, match_method, ambiguous, excluded"),
+    sb.from("instantly_campaigns").select("id, name, status, emails_sent").eq("team_id", teamId).is("archived_at", null),
   ]);
 
   if (clients.error) {
@@ -26,28 +34,61 @@ export async function GET() {
   }
 
   const byCampaign = new Map((mappings.data ?? []).map((m) => [m.campaign_id, m]));
-  const counts = new Map<string, { total: number; manual: number }>();
-  for (const m of mappings.data ?? []) {
-    if (!m.client_id || m.excluded) continue;
-    const c = counts.get(m.client_id) ?? { total: 0, manual: 0 };
-    c.total++;
-    if (m.match_method === "manual") c.manual++;
-    counts.set(m.client_id, c);
-  }
+
+  /*
+   * Counted across BOTH platforms. `campaignCount` is the number of campaigns
+   * a client has, and a client does not experience its Instantly work as a
+   * separate business.
+   */
+  const counts = new Map<string, { total: number; manual: number; instantly: number }>();
+  const tally = (
+    rows: Array<{ client_id: string | null; excluded: boolean; match_method?: string }>,
+    platform: "emailbison" | "instantly",
+  ) => {
+    for (const m of rows) {
+      if (!m.client_id || m.excluded) continue;
+      const c = counts.get(m.client_id) ?? { total: 0, manual: 0, instantly: 0 };
+      c.total++;
+      if (m.match_method === "manual") c.manual++;
+      if (platform === "instantly") c.instantly++;
+      counts.set(m.client_id, c);
+    }
+  };
+  tally((mappings.data ?? []) as never[], "emailbison");
+  tally((instantlyMappings.data ?? []) as never[], "instantly");
 
   // The unassigned queue: campaigns needing a human. Excluded ones are left out
   // deliberately -- they're a settled decision, not an outstanding task, and
   // leaving them in would mean the queue never reaches zero.
-  const unassigned = (campaigns.data ?? [])
-    .map((c) => ({ campaign: c, mapping: byCampaign.get(c.id) }))
+  const instantlyByCampaign = new Map(
+    ((instantlyMappings.data ?? []) as Array<{ campaign_id: string }>).map((m) => [m.campaign_id, m]),
+  );
+
+  const unassigned = [
+    ...(campaigns.data ?? []).map((c) => ({
+      campaignId: String(c.id),
+      platform: "emailbison" as const,
+      name: c.name,
+      status: c.status,
+      lifetimeSent: c.lifetime_emails_sent ?? 0,
+      mapping: byCampaign.get(c.id) as { excluded?: boolean; client_id?: string | null; ambiguous?: boolean } | undefined,
+    })),
+    /*
+     * Instantly's unattributed campaigns belong in the same queue: the work of
+     * assigning them is identical, and a queue that shows half of it reaches
+     * zero while the job is unfinished.
+     */
+    ...((instantlyCampaigns.data ?? []) as Array<{ id: string; name: string; status: number; emails_sent: number | null }>).map((c) => ({
+      campaignId: c.id,
+      platform: "instantly" as const,
+      name: c.name,
+      status: { 0: "draft", 1: "active", 2: "paused", 3: "completed" }[c.status] ?? "error",
+      lifetimeSent: c.emails_sent ?? 0,
+      mapping: instantlyByCampaign.get(c.id) as { excluded?: boolean; client_id?: string | null; ambiguous?: boolean } | undefined,
+    })),
+  ]
     .filter(({ mapping }) => mapping && !mapping.excluded && (!mapping.client_id || mapping.ambiguous))
-    .map(({ campaign, mapping }) => ({
-      campaignId: campaign.id,
-      name: campaign.name,
-      status: campaign.status,
-      lifetimeSent: campaign.lifetime_emails_sent ?? 0,
-      ambiguous: Boolean(mapping!.ambiguous),
-    }))
+    .map(({ mapping: _mapping, ...rest }) => ({ ...rest, ambiguous: Boolean(_mapping!.ambiguous) }))
     .sort((a, b) => b.lifetimeSent - a.lifetimeSent);
 
   return NextResponse.json({
@@ -60,6 +101,8 @@ export async function GET() {
       active: c.active,
       campaignCount: counts.get(c.id)?.total ?? 0,
       manualCount: counts.get(c.id)?.manual ?? 0,
+      /* Of those, how many are Instantly's — so the split is visible. */
+      instantlyCount: counts.get(c.id)?.instantly ?? 0,
     })),
     unassigned,
     excludedCount: (mappings.data ?? []).filter((m) => m.excluded).length,

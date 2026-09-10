@@ -308,6 +308,85 @@ if (CL) {
     "/api/campaigns?limit=500", `/api/campaigns?limit=500&client_id=${CL}`, metric.mgmtTotal);
 }
 
+console.log("\n— replies honour the platform —");
+{
+  /*
+   * The leak: every reply request returned EmailBison's rows whatever the
+   * filter said, so Instantly showed 5,761 EmailBison replies under its own
+   * label. Identical totals under every platform were the tell, so that is
+   * exactly what this asserts against.
+   */
+  const eb = await get("/api/analytics/replies/rows?preset=90d&platforms=emailbison");
+  const inst = await get("/api/analytics/replies/rows?preset=90d&platforms=instantly");
+  const both = await get("/api/analytics/replies/rows?preset=90d&platforms=emailbison,instantly");
+
+  if (!inst.total) {
+    bad("Instantly replies are surfaced", "the Instantly reply list is empty");
+  } else if (inst.total === eb.total) {
+    bad("the reply list honours the platform", `both report ${eb.total} — the filter is ignored`);
+  } else {
+    ok("the reply list honours the platform", `emailbison ${eb.total} vs instantly ${inst.total}`);
+  }
+
+  // Different platforms must return different PEOPLE, not just different counts.
+  const first = (j) => (j.rows ?? [])[0]?.fromEmail ?? null;
+  if (first(eb) && first(inst) && first(eb) !== first(inst)) {
+    ok("the two platforms return different repliers", `${first(eb)} vs ${first(inst)}`);
+  } else {
+    bad("the two platforms return different repliers", `${first(eb)} vs ${first(inst)}`);
+  }
+
+  if (both.unavailable) ok("a mixed reply selection is refused, not merged", "explained");
+  else bad("a mixed reply selection is refused, not merged", `returned ${both.total} rows`);
+
+  // The four dimensions Instantly cannot answer must say so rather than
+  // borrowing EmailBison's people.
+  const cards = await get("/api/analytics/replies?preset=90d&platforms=instantly");
+  const unavailable = (cards.breakdowns ?? []).filter((b) => b.unavailable).map((b) => b.key);
+  const populated = (cards.breakdowns ?? []).filter((b) => (b.rows ?? []).length).map((b) => b.key);
+  if (unavailable.length && populated.length) {
+    ok("unsupported reply dimensions say so", `have: ${populated.join(",")} | absent: ${unavailable.join(",")}`);
+  } else {
+    bad("unsupported reply dimensions say so", `unavailable=${unavailable.length} populated=${populated.length}`);
+  }
+}
+
+console.log("\n— clients and copy span both platforms —");
+{
+  /*
+   * The Clients page counted EmailBison campaigns only, so Bastion Realty
+   * South read 10 against a real 26. A count that is wrong by more than half,
+   * with nothing on screen to suggest it.
+   */
+  const clients = await get("/api/clients");
+  const withInstantly = (clients.clients ?? []).filter((c) => (c.instantlyCount ?? 0) > 0);
+  if (!withInstantly.length) {
+    bad("client campaign counts include Instantly", "no client reports any Instantly campaigns");
+  } else {
+    const top = withInstantly.sort((a, b) => b.campaignCount - a.campaignCount)[0];
+    if (top.campaignCount > top.instantlyCount) {
+      ok("client campaign counts include Instantly", `${top.name}: ${top.campaignCount} of which ${top.instantlyCount} Instantly`);
+    } else {
+      bad("client campaign counts include Instantly", `${top.name}: total ${top.campaignCount} <= instantly ${top.instantlyCount}`);
+    }
+  }
+
+  const unassignedInstantly = (clients.unassigned ?? []).filter((u) => u.platform === "instantly").length;
+  if (unassignedInstantly) ok("the unassigned queue includes Instantly", `${unassignedInstantly} of ${(clients.unassigned ?? []).length}`);
+  else bad("the unassigned queue includes Instantly", "none listed — Instantly campaigns cannot be attributed from here");
+
+  /*
+   * The spintax signal read 28% of the sequences and missed the platform where
+   * the finding actually is.
+   */
+  const copy = await get("/api/copy?preset=90d");
+  const sp = copy.spintax ?? [];
+  const ebRows = sp.filter((r) => r.platform === "emailbison").length;
+  const instRows = sp.filter((r) => r.platform === "instantly").length;
+  if (instRows && ebRows) ok("the spintax signal covers both platforms", `${ebRows} emailbison + ${instRows} instantly`);
+  else bad("the spintax signal covers both platforms", `emailbison=${ebRows} instantly=${instRows}`);
+}
+
 console.log("\n— campaigns page spans both platforms —");
 {
   const all = await get("/api/campaigns?limit=1");

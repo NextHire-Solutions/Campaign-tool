@@ -1,6 +1,7 @@
 import { NextResponse, type NextRequest } from "next/server";
 import { getSupabase } from "@/lib/supabase/server";
 import { resolveFilters, toISODate } from "@/lib/analytics/query-params.ts";
+import { resolvePlatformScope } from "@/lib/analytics/platform-scope.ts";
 import { COPY_DIMENSION_KEYS, isCopyDimension } from "@/lib/analytics/copy-dimensions.ts";
 
 /*
@@ -70,19 +71,50 @@ export async function GET(request: NextRequest) {
     p_campaign_ids: filters.campaignIds.length ? filters.campaignIds : null,
   };
 
-  const [{ data, error }, spintax] = await Promise.all([
+  /*
+   * INSTANTLY'S COPY TOO. This read 548 EmailBison steps and ignored 1,376
+   * Instantly ones — 28% coverage of a signal whose whole job is finding copy
+   * that never varies, and Instantly is where the finding is: 64 of its
+   * campaigns sent 88,609 emails in 90 days on copy with no variation at all.
+   *
+   * A campaign filter takes Instantly out of scope for the same reason it does
+   * everywhere else (platform-scope.ts): campaign ids are EmailBison integers,
+   * so a selection containing one cannot contain an Instantly campaign.
+   */
+  const platformScope = resolvePlatformScope({
+    platforms: filters.platforms,
+    campaignIds: filters.campaignIds,
+  });
+  const wantsInstantly =
+    filters.campaignIds.length === 0 &&
+    (filters.platforms.length === 0 || filters.platforms.includes("instantly"));
+
+  const [{ data, error }, spintax, instantlySpintax] = await Promise.all([
     getSupabase().rpc("analytics_copy_steps", scope),
     /*
      * Same scope, deliberately: a campaign flagged for unvaried copy has to be
      * one this tab is already showing, or the flag points at something the
      * reader cannot see.
      */
-    getSupabase().rpc("analytics_spintax_campaigns", scope),
+    platformScope.emailbison
+      ? getSupabase().rpc("analytics_spintax_campaigns", scope)
+      : Promise.resolve({ data: [], error: null }),
+    wantsInstantly
+      ? getSupabase().rpc("analytics_instantly_spintax_campaigns", {
+          p_team_id: TEAM_ID(),
+          p_from: filters.from,
+          p_to: filters.to,
+          p_client_ids: filters.clientIds.length ? filters.clientIds : null,
+        })
+      : Promise.resolve({ data: [], error: null }),
   ]);
 
   if (error) return NextResponse.json({ error: error.message }, { status: 500 });
   if (spintax.error) {
     return NextResponse.json({ error: spintax.error.message }, { status: 500 });
+  }
+  if (instantlySpintax.error) {
+    return NextResponse.json({ error: instantlySpintax.error.message }, { status: 500 });
   }
 
   const steps = ((data ?? []) as StepRow[]).filter(
@@ -233,6 +265,22 @@ export async function GET(request: NextRequest) {
       tagged_steps: steps.filter((s) => dimensions.every((d) => s.tags?.[d])).length,
       total_steps: steps.length,
     },
-    spintax: spintax.data ?? [],
+    /*
+     * Both platforms in one list, each row naming its own — sorted by volume so
+     * the biggest unvaried sender is first regardless of which platform it is
+     * on, which is the question this card answers.
+     */
+    spintax: ([
+      ...((spintax.data ?? []) as Array<Record<string, unknown>>).map((r) => ({
+        ...r,
+        platform: "emailbison",
+      })),
+      ...((instantlySpintax.data ?? []) as Array<Record<string, unknown>>).map((r) => ({
+        ...r,
+        platform: "instantly",
+      })),
+    ] as Array<Record<string, unknown>>).sort(
+      (a, b) => Number(b.sent ?? 0) - Number(a.sent ?? 0),
+    ),
   });
 }

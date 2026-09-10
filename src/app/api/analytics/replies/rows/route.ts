@@ -1,6 +1,7 @@
 import { NextResponse, type NextRequest } from "next/server";
 import { getSupabase } from "@/lib/supabase/server";
 import { resolveFilters, toISODate } from "@/lib/analytics/query-params.ts";
+import { resolvePlatformScope } from "@/lib/analytics/platform-scope.ts";
 
 export const dynamic = "force-dynamic";
 
@@ -52,6 +53,88 @@ export async function GET(request: NextRequest) {
   }
 
   const page = Math.max(1, Number(params.get("page")) || 1);
+
+  /*
+   * THE PLATFORM FILTER WAS IGNORED HERE. Every request returned EmailBison's
+   * replies, so selecting Instantly showed 5,761 EmailBison replies under an
+   * Instantly label — identical totals under every platform, which was the
+   * tell. Same failure as the campaign-filter leak, and it fails upward
+   * because the numbers look perfectly plausible.
+   */
+  const scope = resolvePlatformScope({
+    platforms: filters.platforms,
+    campaignIds: filters.campaignIds,
+  });
+
+  if (scope.instantly && !scope.emailbison) {
+    const { data, error } = await getSupabase().rpc("analytics_instantly_reply_rows", {
+      p_team_id: teamId,
+      p_from: filters.from,
+      p_to: filters.to,
+      p_client_ids: filters.clientIds.length ? filters.clientIds : null,
+      p_search: params.get("q")?.trim() || null,
+      p_dimension: params.get("dimension") || null,
+      p_value: params.get("value") || null,
+      p_limit: PAGE_SIZE,
+      p_offset: (page - 1) * PAGE_SIZE,
+    });
+    if (error) {
+      console.error("[api/analytics/replies/rows:instantly]", error);
+      return NextResponse.json({ error: error.message }, { status: 500 });
+    }
+    type InstRow = {
+      reply_id: string; received_date: string; from_email: string | null;
+      lead_name: string | null; company: string | null; campaign_name: string | null;
+      client_name: string | null; subject: string | null; preview: string | null;
+      esp: string | null; mailbox_kind: string | null; total_count: number;
+    };
+    const list = (data ?? []) as InstRow[];
+    return NextResponse.json({
+      platform: "instantly",
+      page,
+      pageSize: PAGE_SIZE,
+      total: Number(list[0]?.total_count ?? 0),
+      rows: list.map((r) => ({
+        replyId: r.reply_id,
+        receivedDate: r.received_date,
+        fromEmail: r.from_email,
+        leadName: r.lead_name,
+        company: r.company,
+        campaignName: r.campaign_name,
+        clientName: r.client_name,
+        subject: r.subject,
+        preview: r.preview,
+        esp: r.esp,
+        mailboxKind: r.mailbox_kind,
+        /*
+         * Absent, not false. "Positive" is a MasterInbox label keyed to
+         * EmailBison reply ids; no Instantly reply has one, so a `false` here
+         * would assert that a reply was judged and found negative.
+         */
+        sentiment: null,
+        positive: null,
+      })),
+    });
+  }
+
+  /*
+   * BOTH platforms selected is refused rather than silently served as one.
+   * The two reply sets answer different questions — EmailBison's carry
+   * sentiment and enriched lead attributes, Instantly's do not — and merging
+   * them would produce a list whose columns are populated for some rows and
+   * empty for others with no way to tell which is which.
+   */
+  if (scope.instantly && scope.emailbison) {
+    return NextResponse.json({
+      platform: "mixed",
+      page,
+      pageSize: PAGE_SIZE,
+      total: 0,
+      rows: [],
+      unavailable:
+        "Reply detail covers one platform at a time. EmailBison replies carry sentiment and lead attributes that Instantly does not report, so the two lists cannot be merged without inventing the missing half. Pick a single platform.",
+    });
+  }
 
   try {
     const { data, error } = await getSupabase().rpc("analytics_reply_rows", {
