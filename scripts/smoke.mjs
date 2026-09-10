@@ -86,7 +86,13 @@ const PAGES = [
   },
   {
     path: "/campaigns",
-    must: [/Search campaigns/, /Campaign/, /Sent/],
+    /*
+     * "Instantly" must appear as a row badge, not merely as a filter option:
+     * the list spans both platforms now, and a page showing only EmailBison
+     * while offering a platform filter is the exact bug this replaced — one
+     * that looks completely normal until you count the rows.
+     */
+    must: [/Search campaigns/, /Campaign/, /Sent/, /Instantly/, /All platforms/],
     mustNot: [/No campaigns found/i],
   },
   { path: "/clients", must: [/\w/], mustNot: [/Could not load/i] },
@@ -315,6 +321,24 @@ if (!(await clickText("Instantly"))) {
  * campaign selected, adding Instantly to the platform filter must not change
  * the total, because no Instantly campaign can be in an EmailBison selection.
  */
+/*
+ * Both platforms actually rendered, counted on the page rather than the API —
+ * an API that returns 501 rows tells you nothing about whether the table drew
+ * them.
+ */
+console.log("");
+{
+  await goto("/campaigns");
+  const badges = await evaluate(`
+    Array.from(document.querySelectorAll('span'))
+      .filter(s => (s.textContent || '').trim() === 'Instantly').length
+  `);
+  const rows = await evaluate(`document.querySelectorAll('table tbody tr').length`);
+  if (!rows) fail("campaigns page renders rows", "table is empty");
+  else if (!badges) fail("campaigns page shows Instantly rows", `${rows} rows, 0 Instantly badges`);
+  else pass("campaigns page shows both platforms", `${rows} rows, ${badges} Instantly`);
+}
+
 console.log("");
 {
   const cookie = `bsa_session=${mintToken()}`;
