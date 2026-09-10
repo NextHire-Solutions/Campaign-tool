@@ -2,6 +2,7 @@ import { createInstantlyClient } from "@/lib/instantly/client.ts";
 import { getSupabase } from "@/lib/supabase/server";
 import { chunkUpsert } from "./jobs.ts";
 import { exclusionReason, matchCampaign } from "@/lib/clients/match.ts";
+import { setCursor } from "./runner";
 import type { JobFn, JobResult } from "./runner";
 
 /*
@@ -383,6 +384,129 @@ function makeInstantlyDayStatsJob(windowDays: number): JobFn {
 export const syncInstantlyDayStats = makeInstantlyDayStatsJob(3);
 /** Nightly drift repair over a wide window. */
 export const syncInstantlyDayStatsDeep = makeInstantlyDayStatsJob(45);
+
+/*
+ * THE HISTORY BEFORE THE WINDOW.
+ *
+ * The two jobs above walk BACK FROM TODAY — 3 days for drift, 45 nightly — so
+ * they keep recent figures honest and can never reach anything older. That left
+ * the daily series holding 96,055 sends against a lifetime of 789,679: a 90-day
+ * view returned 45 days of data and said nothing about it, which is a wrong
+ * number wearing a confident label.
+ *
+ * A DRAINING QUEUE, the same shape as sync-instantly-replies-backfill: it walks
+ * one chunk older per run and becomes a no-op once it reaches the floor. That
+ * is what keeps it inside the ten-minute job lock instead of trying to fetch
+ * eleven months in a single run.
+ *
+ * THE CURSOR IS `sync_state.cursor_date` — the oldest day already fetched — and
+ * NOT "the oldest row we hold", which is what the replies backfill uses. A day
+ * on which nothing happened stores no row by design (rule 1: an absent day and
+ * a zero day must not look alike), so a row-derived cursor would stall on the
+ * first quiet day and re-fetch it forever.
+ */
+const BACKFILL_DAYS_PER_RUN = 120;
+
+/** Nothing precedes Instantly's first reply; without a floor this walks forever. */
+const BACKFILL_FLOOR = "2025-06-01";
+
+export const syncInstantlyDayStatsBackfill: JobFn = async ({
+  cursorDate,
+}): Promise<JobResult> => {
+  const client = createInstantlyClient();
+  const teamId = TEAM_ID();
+  const sb = getSupabase();
+
+  /*
+   * Where to resume. On the very first run there is no cursor, so it starts at
+   * the oldest day the window jobs have already stored and works back from
+   * there — no overlap, no gap.
+   */
+  let from = cursorDate;
+  if (!from) {
+    const { data } = await sb
+      .from("instantly_campaign_day_stats")
+      .select("stat_date")
+      .eq("team_id", teamId)
+      .order("stat_date", { ascending: true })
+      .limit(1);
+    from = ((data ?? [])[0]?.stat_date as string | undefined) ?? daysAgo(45);
+  }
+
+  const floor = BACKFILL_FLOOR;
+  if (from <= floor) {
+    return { rowsWritten: 0, apiCalls: 0, detail: { status: "complete", oldest: from } };
+  }
+
+  const rows: Record<string, unknown>[] = [];
+  let calls = 0;
+  let day = from;
+  let reached = from;
+
+  for (let i = 0; i < BACKFILL_DAYS_PER_RUN; i++) {
+    const previous = new Date(`${day}T00:00:00Z`);
+    previous.setUTCDate(previous.getUTCDate() - 1);
+    day = previous.toISOString().slice(0, 10);
+    if (day < floor) break;
+
+    const perCampaign = await client.getCampaignAnalytics({ from: day, to: day });
+    calls++;
+    reached = day;
+
+    for (const c of perCampaign) {
+      // Same rule as the window jobs: a day with nothing on it is not a fact.
+      if (!c.emails_sent_count && !c.reply_count && !c.bounced_count) continue;
+      rows.push({
+        campaign_id: c.campaign_id,
+        team_id: teamId,
+        stat_date: day,
+        sent: c.emails_sent_count ?? 0,
+        contacted: c.contacted_count ?? 0,
+        new_leads_contacted: c.new_leads_contacted_count ?? 0,
+        opened: c.open_count ?? 0,
+        unique_opened: c.open_count_unique ?? 0,
+        replies: c.reply_count ?? 0,
+        unique_replies: c.reply_count_unique ?? c.reply_count ?? 0,
+        replies_automatic: c.reply_count_automatic ?? 0,
+        clicks: c.link_click_count ?? 0,
+        opportunities: c.total_opportunities ?? 0,
+        bounced: c.bounced_count ?? 0,
+        unsubscribed: c.unsubscribed_count ?? 0,
+        leads_count: c.leads_count ?? null,
+        completed: c.completed_count ?? null,
+        fetched_at: new Date().toISOString(),
+      });
+    }
+  }
+
+  if (rows.length) {
+    for (let i = 0; i < rows.length; i += 500) {
+      const { error } = await sb
+        .from("instantly_campaign_day_stats")
+        .upsert(rows.slice(i, i + 500), { onConflict: "campaign_id,stat_date" });
+      if (error) throw new Error(`instantly day stats backfill: ${error.message}`);
+    }
+  }
+
+  /*
+   * The cursor moves ONLY after the writes land. Advancing it first would skip
+   * a chunk permanently on a failed upsert, and the whole point of a draining
+   * queue is that a failed run costs a retry rather than a hole.
+   */
+  await setCursor("sync-instantly-day-stats-backfill", teamId, reached);
+
+  return {
+    rowsWritten: rows.length,
+    apiCalls: calls,
+    detail: {
+      from,
+      reached,
+      days: calls,
+      rows: rows.length,
+      remaining: reached <= floor ? 0 : Math.round((Date.parse(reached) - Date.parse(floor)) / 86_400_000),
+    },
+  };
+};
 
 // --- per-inbox sending figures ------------------------------------------------
 

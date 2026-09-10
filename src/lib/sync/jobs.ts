@@ -29,6 +29,7 @@ import {
   syncInstantlyClients,
   syncInstantlyDayStats,
   syncInstantlyDayStatsDeep,
+  syncInstantlyDayStatsBackfill,
   syncInstantlyReplies,
   syncInstantlyRepliesBackfill,
   syncInstantlyRepliesDeep,
@@ -2035,6 +2036,7 @@ export const JOBS = {
   "sync-instantly-clients": syncInstantlyClients,
   "sync-instantly-day-stats": syncInstantlyDayStats,
   "sync-instantly-day-stats-deep": syncInstantlyDayStatsDeep,
+  "sync-instantly-day-stats-backfill": syncInstantlyDayStatsBackfill,
   // Per-inbox sends and bounces — the only place Instantly's account-level
   // figures exist, and what lets Infrastructure rank its 536 inboxes.
   "sync-instantly-account-stats": syncInstantlyAccountStats,

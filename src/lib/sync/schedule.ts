@@ -102,6 +102,13 @@ export const SCHEDULE = [
   // A draining queue: ~8 minutes of real work per run while history is
   // incomplete, then a single call that finds nothing and stops.
   { job: "sync-instantly-replies-backfill", everyMinutes: 30 },
+  /*
+   * Draining queue: real work while eleven months of daily history are missing,
+   * a no-op the moment it reaches the floor. 30 minutes because each run is
+   * ~120 API calls and there is no hurry — nothing depends on it finishing by a
+   * particular time, only on it finishing.
+   */
+  { job: "sync-instantly-day-stats-backfill", everyMinutes: 30 },
 ] as const satisfies readonly ScheduleEntry[];
 
 /*

@@ -199,6 +199,34 @@ await check("positive=1 narrows the reply set",
   "/api/analytics/replies?preset=90d&positive=1",
   (j) => (j.breakdowns ?? []).reduce((n, b) => n + Number(b.total ?? 0), 0));
 
+console.log("\n— data integrity —");
+/*
+ * The daily series and the per-campaign lifetime counters are two INDEPENDENT
+ * reads of the same platform, so they must agree. They did not: the series held
+ * 96,055 sends against a lifetime of 789,679, because the sync only ever walked
+ * back 45 days from today and nothing said so on screen. A 90-day view returned
+ * 45 days of data and looked complete.
+ *
+ * Asserted as a ratio rather than equality — the lifetime counters move as
+ * Instantly revises them, and a test that demands an exact match would fail on
+ * ordinary drift and get ignored.
+ */
+{
+  const lifetimeRow = await get("/api/analytics/campaigns?preset=90d&platforms=instantly");
+  const series = await get("/api/analytics/volume?preset=90d&platforms=instantly");
+  const windowed = Number(series?.total ?? 0);
+  if (!windowed) {
+    bad("Instantly daily series has history", "90-day window is empty");
+  } else {
+    // 90 days of a platform running most of the year should be a large share of
+    // the year, not a rounding error. Before the backfill this was 12%.
+    const lifetime = (lifetimeRow.rows ?? []).reduce((n, r) => n + Number(r.sent ?? 0), 0);
+    const share = lifetime ? windowed / lifetime : 0;
+    if (share < 0.5) bad("Instantly 90d covers a real span", `only ${(share * 100).toFixed(0)}% of the 90d table`);
+    else ok("Instantly daily series has real history", `90d = ${windowed.toLocaleString()}`);
+  }
+}
+
 console.log("\n— chart controls (server-side) —");
 /*
  * exclude_weekends is applied in SQL, not in the chart component, so it is
