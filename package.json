@@ -11,7 +11,8 @@
     "test": "node --test 'src/**/*.test.ts'",
     "probe": "node --env-file=.env.local scripts/probe-eb.mjs",
     "smoke": "node scripts/smoke.mjs",
-    "check:filters": "node scripts/check-filters.mjs"
+    "check:filters": "node scripts/check-filters.mjs",
+    "verify:instantly": "node scripts/verify-instantly-writes.mjs"
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.58.0",

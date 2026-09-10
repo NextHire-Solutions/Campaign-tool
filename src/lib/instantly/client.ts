@@ -61,7 +61,11 @@ export class InstantlyClient {
     this.apiKey = apiKey;
   }
 
-  private async request<T>(path: string, attempt = 0): Promise<T> {
+  private async request<T>(
+    path: string,
+    init?: { method: "POST" | "PATCH" | "DELETE"; body?: unknown },
+    attempt = 0,
+  ): Promise<T> {
     // The one endpoint with its own budget.
     if (path.startsWith("/emails")) {
       const wait = this.nextEmailsAt - Date.now();
@@ -70,11 +74,13 @@ export class InstantlyClient {
     }
 
     const response = await fetch(`${this.baseUrl}/api/v2${path}`, {
+      method: init?.method ?? "GET",
       headers: {
         Authorization: `Bearer ${this.apiKey}`,
         Accept: "application/json",
         "Content-Type": "application/json",
       },
+      ...(init?.body === undefined ? {} : { body: JSON.stringify(init.body) }),
       // Instantly is external and its numbers move constantly; caching here
       // would serve stale analytics that look current.
       cache: "no-store",
@@ -90,7 +96,7 @@ export class InstantlyClient {
       await sleep(Number.isFinite(retryAfter) && retryAfter > 0
         ? retryAfter * 1000
         : 5_000 * 2 ** attempt);
-      return this.request<T>(path, attempt + 1);
+      return this.request<T>(path, init, attempt + 1);
     }
 
     if (!response.ok) {
@@ -122,7 +128,14 @@ export class InstantlyClient {
       );
     }
 
-    return (await response.json()) as T;
+    /*
+     * A write can answer 204, or 200 with an empty body. `response.json()`
+     * throws on both, which would turn a successful delete into a failure.
+     */
+    if (response.status === 204) return undefined as T;
+    const text = await response.text();
+    if (!text) return undefined as T;
+    return JSON.parse(text) as T;
   }
 
   /**
@@ -298,6 +311,140 @@ export class InstantlyClient {
     if (options.since) params.min_timestamp_created = options.since;
     if (options.until) params.max_timestamp_created = options.until;
     return this.walk<InstantlyEmail>("/emails", params, options.maxPages ?? 500);
+  }
+
+  // --- writes ------------------------------------------------------------
+  /*
+   * Every method below matches a contract verified against a disposable
+   * campaign on 2026-09-10 (docs/instantly-api-findings.md). Nothing here can
+   * start a campaign: `activate` is deliberately absent, because the only
+   * caller that would ever want it is one that has already decided to email
+   * thousands of real people, and that decision does not belong in a client.
+   */
+
+  /**
+   * A campaign, created paused.
+   *
+   * `campaign_schedule` is required, and its timezone is a CLOSED ENUM of 102
+   * values that does not include `America/New_York` — a wrong value is a 400,
+   * not a fallback. `America/Detroit` is the Eastern entry.
+   */
+  async createCampaign(input: {
+    name: string;
+    timezone?: string;
+    from?: string;
+    to?: string;
+  }): Promise<{ id: string }> {
+    return this.request<{ id: string }>("/campaigns", {
+      method: "POST",
+      body: {
+        name: input.name,
+        campaign_schedule: {
+          schedules: [
+            {
+              name: "Default",
+              timing: { from: input.from ?? "09:00", to: input.to ?? "17:00" },
+              days: { 1: true, 2: true, 3: true, 4: true, 5: true },
+              timezone: input.timezone ?? "America/Detroit",
+            },
+          ],
+        },
+      },
+    });
+  }
+
+  async getCampaign(id: string): Promise<Record<string, unknown>> {
+    return this.request<Record<string, unknown>>(`/campaigns/${id}`);
+  }
+
+  async updateCampaign(id: string, patch: Record<string, unknown>): Promise<unknown> {
+    return this.request(`/campaigns/${id}`, { method: "PATCH", body: patch });
+  }
+
+  /** Carries the SEQUENCE and no leads — the same shape as EmailBison's. */
+  async duplicateCampaign(id: string): Promise<{ id: string }> {
+    return this.request<{ id: string }>(`/campaigns/${id}/duplicate`, {
+      method: "POST",
+      body: {},
+    });
+  }
+
+  async pauseCampaign(id: string): Promise<unknown> {
+    return this.request(`/campaigns/${id}/pause`, { method: "POST", body: {} });
+  }
+
+  async deleteCampaign(id: string): Promise<unknown> {
+    return this.request(`/campaigns/${id}`, { method: "DELETE" });
+  }
+
+  /**
+   * The sending inboxes, as a WHOLE-ARRAY REPLACE.
+   *
+   * Instantly has no attach/remove pair — `email_list` on the campaign is the
+   * assignment. So adding one inbox means reading the current list, appending,
+   * and writing it back; callers that skip the read silently detach everything
+   * already assigned. That asymmetry with EmailBison is why this is named for
+   * what it does rather than for the feature it serves.
+   */
+  async setCampaignInboxes(id: string, emails: string[]): Promise<unknown> {
+    return this.request(`/campaigns/${id}`, {
+      method: "PATCH",
+      body: { email_list: emails },
+    });
+  }
+
+  async getCampaignInboxes(id: string): Promise<string[]> {
+    const campaign = await this.getCampaign(id);
+    const list = campaign?.email_list;
+    return Array.isArray(list) ? (list as string[]) : [];
+  }
+
+  /** Leads currently in a campaign. */
+  async listCampaignLeads(
+    campaignId: string,
+    limit = 100,
+  ): Promise<Array<Record<string, unknown>>> {
+    const page = await this.request<{ items?: Array<Record<string, unknown>> }>(
+      "/leads/list",
+      { method: "POST", body: { campaign: campaignId, limit } },
+    );
+    return page?.items ?? [];
+  }
+
+  /** Removes leads from a campaign. Ids only — never a bare campaign_id. */
+  async removeLeads(campaignId: string, ids: string[]): Promise<unknown> {
+    return this.request("/leads", {
+      method: "DELETE",
+      body: { campaign_id: campaignId, ids },
+    });
+  }
+
+  /**
+   * Moves a campaign's leads to another campaign.
+   *
+   * A MOVE, not a copy: the source is emptied. Instantly offers no copy, and
+   * `/leads` (which would add rather than move) is refused while the workspace
+   * is over its lead limit. Callers must be explicit with the user about that
+   * — it is the opposite of EmailBison's re-campaign, which leaves the source
+   * intact.
+   *
+   * `ids` alone is rejected with "A source campaign or list is required".
+   */
+  async moveCampaignLeads(fromCampaignId: string, toCampaignId: string): Promise<unknown> {
+    return this.request("/leads/move", {
+      method: "POST",
+      body: { campaign: fromCampaignId, to_campaign_id: toCampaignId },
+    });
+  }
+
+  /** Plan limits, so a caller can explain a refusal instead of retrying it. */
+  async getLeadQuota(): Promise<{ limit: number; used: number; remaining: number }> {
+    const plan = await this.request<{
+      subscriptions?: { outreach?: { total_lead_limit?: number; current_lead_count?: number } };
+    }>("/workspace-billing/plan-details");
+    const limit = Number(plan?.subscriptions?.outreach?.total_lead_limit ?? 0);
+    const used = Number(plan?.subscriptions?.outreach?.current_lead_count ?? 0);
+    return { limit, used, remaining: Math.max(limit - used, 0) };
   }
 }
 

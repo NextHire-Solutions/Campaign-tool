@@ -145,3 +145,93 @@ every screen here breaks down by. The workspace figure includes sends that
 cannot be attributed to anything, so adopting it would make the campaign and
 client tables fail to sum to the KPI band — the exact reconciliation the band
 depends on.
+
+---
+
+## Write endpoints — probed 2026-09-10 against disposable campaigns
+
+Every result below came from campaigns this probe created and then deleted.
+`/activate` was never called: an activated campaign emails real people, and no
+verification is worth that.
+
+| Works | Method | Path | Notes |
+|---|---|---|---|
+| ✅ | POST | `/campaigns` | `name` + `campaign_schedule` required |
+| ✅ | GET | `/campaigns/{id}` | |
+| ✅ | PATCH | `/campaigns/{id}` | rename, sequence, settings, **and inbox assignment** |
+| ✅ | POST | `/campaigns/{id}/duplicate` | carries the SEQUENCE, 0 leads — same as Bison |
+| ✅ | POST | `/campaigns/{id}/pause` | |
+| ✅ | DELETE | `/campaigns/{id}` | |
+| ✅ | POST | `/leads/list` | leads in a campaign |
+| ✅ | DELETE | `/leads` | `{campaign_id, ids[]}` — bulk removal |
+| ✅ | POST | `/leads/move` | **needs a source**: `{campaign, to_campaign_id}` |
+| ✅ | POST | `/campaigns/{id}/export` | |
+| ❌ | POST | `/leads` | **quota-blocked** — see below |
+| ❌ | POST | `/campaigns/{id}/from-export` | 403 "Campaign not shared" — needs `/share` first |
+
+### Three contract details that cost a request each
+
+1. **`campaign_schedule.schedules[].timezone` is a closed enum of 102 values and
+   `America/New_York` is NOT one of them.** Use `America/Detroit` for Eastern.
+   A wrong value is a 400, not a default.
+
+2. **`/leads/move` will not accept `ids` alone.** It answers 400 with "A source
+   campaign or list is required for bulk move operations". `{campaign,
+   to_campaign_id}` moves a whole campaign's leads.
+
+3. **Inbox assignment is not its own endpoint.** There is no
+   `/campaigns/{id}/accounts`; the sending inboxes are the `email_list` array on
+   the campaign, set with PATCH and verified by reading the campaign back. This
+   is the one place Instantly and EmailBison differ in shape rather than naming
+   — Bison has attach/remove endpoints, Instantly has a whole-array replace,
+   which means a read-modify-write rather than a delta.
+
+### THE BLOCKER: the workspace is over its lead limit
+
+    plan                 Hyper Growth ($97/mo)
+    total_lead_limit     25,000
+    current_lead_count   40,482        ← 15,482 OVER
+
+`POST /leads` therefore answers **403 "Lead limit reached. Remaining uploads:
+0"** for every lead, in every campaign. This is a billing state, not an API
+problem, and no amount of retrying or batching gets around it.
+
+What that does and does not block:
+
+- **Blocked:** adding leads to any Instantly campaign; migrating a campaign
+  from EmailBison to Instantly (which is an upload by another name);
+  re-campaigning within Instantly by COPYING leads.
+- **Not blocked:** creating campaigns, renaming, editing sequences, assigning
+  inboxes, pausing, duplicating, deleting, removing leads, and moving leads
+  between existing Instantly campaigns (`/leads/move` relocates rows that are
+  already inside the quota rather than adding new ones).
+
+Re-campaign on Instantly is therefore possible only as a MOVE, which empties
+the source campaign — the opposite of the EmailBison behaviour, where leads are
+copied and the source keeps its history. That is a product decision, not an
+implementation detail, and it should not be made silently.
+
+### `/leads/move` is ASYNCHRONOUS, and it locks the campaign
+
+Calling it returns 200 immediately, but the work happens in a background job.
+While that job runs, any add or remove against either campaign answers:
+
+    409  There is a move-leads job in progress. You cannot add or remove leads
+         from this campaign until the process is complete.
+
+Found by calling `removeLeads` straight after `moveCampaignLeads` in the same
+script. Two consequences for anything built on it:
+
+1. A re-campaign implemented as a move cannot verify its own result by reading
+   the campaign back immediately, the way the EmailBison version does — the
+   count is not final when the call returns.
+2. Two operations on the same campaign must be serialised by the CALLER.
+   There is no documented way to poll the job, so the practical approach is to
+   treat move as fire-and-forget and let the next sync report the true state.
+
+**`DELETE /campaigns/{id}` IS blocked by the lock too.** An earlier draft of
+this note said the opposite, on the strength of one run where the delete
+happened to land after the job had finished — a race read as a rule. Deleting a
+campaign whose move is still running answers the same 409, so any cleanup path
+has to retry rather than assume. Retrying once about ten seconds later has been
+enough every time.
