@@ -39,7 +39,7 @@ export async function GET(request: NextRequest) {
       p_from: filters.from,
       p_to: filters.to,
       p_client_ids: filters.clientIds.length ? filters.clientIds : null,
-      p_campaign_ids: filters.campaignIds.length ? filters.campaignIds : null,
+      p_campaign_ids: filters.emailbisonCampaignIds.length ? filters.emailbisonCampaignIds : null,
     }),
     sb.from("offers").select("id, name, niche, active").eq("team_id", teamId).order("name"),
     sb.from("campaign_offers").select("campaign_id, offer_id"),

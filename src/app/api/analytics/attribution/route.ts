@@ -65,7 +65,7 @@ export async function GET(request: NextRequest) {
   }
 
   const clientIds = filters.clientIds.length ? filters.clientIds : null;
-  const campaignIds = filters.campaignIds.length ? filters.campaignIds : null;
+  const campaignIds = filters.emailbisonCampaignIds.length ? filters.emailbisonCampaignIds : null;
   const sb = getSupabase();
 
   try {

@@ -34,7 +34,7 @@ export async function GET(request: NextRequest) {
       p_team_id: teamId,
       p_from: filters.from,
       p_to: filters.to,
-      p_campaign_ids: filters.campaignIds.length ? filters.campaignIds : null,
+      p_campaign_ids: filters.emailbisonCampaignIds.length ? filters.emailbisonCampaignIds : null,
       p_client_ids: filters.clientIds.length ? filters.clientIds : null,
       p_exclude_weekends: filters.excludeWeekends,
       p_compare: filters.compare,
@@ -96,7 +96,8 @@ export async function GET(request: NextRequest) {
      */
     const scope = resolvePlatformScope({
       platforms: filters.platforms,
-      campaignIds: filters.campaignIds,
+      emailbisonCampaignIds: filters.emailbisonCampaignIds,
+      instantlyCampaignIds: filters.instantlyCampaignIds,
     });
     const wantsInstantly = scope.instantly;
     const wantsEmailBison = scope.emailbison;
@@ -125,7 +126,19 @@ export async function GET(request: NextRequest) {
           p_from: filters.from,
           p_to: filters.to,
           p_client_ids: filters.clientIds.length ? filters.clientIds : null,
-          p_campaign_ids: null,
+          /*
+           * THE INSTANTLY HALF OF THE CAMPAIGN FILTER, not null.
+           *
+           * This was null with a comment saying the branch was unreachable when
+           * a campaign filter was set — true while the picker could only offer
+           * EmailBison ids, and false the moment it could offer both. Null means
+           * "no restriction", so leaving it would have re-opened the original
+           * leak from the other side: pick one Instantly campaign, get the whole
+           * Instantly workspace.
+           */
+          p_campaign_ids: filters.instantlyCampaignIds.length
+            ? filters.instantlyCampaignIds
+            : null,
         },
       );
       if (instError) throw new Error(instError.message);

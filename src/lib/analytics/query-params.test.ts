@@ -92,8 +92,33 @@ describe("compare period", () => {
 
 describe("list params", () => {
   test("parses comma-joined ids and dedupes", () => {
+    /*
+     * TEXT, because one filter now carries both platforms — EmailBison keys
+     * with a bigint and Instantly with a uuid, and no numeric type holds both.
+     */
     const f = resolve("campaign_ids=12,7,12");
-    assert.deepEqual(f.campaignIds, [12, 7]);
+    assert.deepEqual(f.campaignIds, ["12", "7"]);
+    assert.deepEqual(f.emailbisonCampaignIds, [12, 7]);
+    assert.deepEqual(f.instantlyCampaignIds, []);
+  });
+
+  test("A UUID IS AN INSTANTLY CAMPAIGN, AND THEY SPLIT CLEANLY", () => {
+    /*
+     * The split is what lets each route send only the ids its own tables
+     * understand — a uuid reaching a bigint column is an error, and a bigint
+     * reaching Instantly matches nothing.
+     */
+    const uuid = "4cb1ce6b-db02-4385-85f5-1ffeecdbb08c";
+    const f = resolve(`campaign_ids=55,${uuid}`);
+    assert.deepEqual(f.campaignIds, ["55", uuid]);
+    assert.deepEqual(f.emailbisonCampaignIds, [55]);
+    assert.deepEqual(f.instantlyCampaignIds, [uuid]);
+  });
+
+  test("a malformed campaign id is rejected, not coerced", () => {
+    assert.throws(() => resolve("campaign_ids=not-an-id"));
+    assert.throws(() => resolve("campaign_ids=0"));
+    assert.throws(() => resolve("campaign_ids=-3"));
   });
 
   test("an empty list is [] rather than ['']", () => {
@@ -174,5 +199,5 @@ test("reply facets serialise as repeated params, not a comma list", () => {
 
 test("ids stay comma-joined — they can never contain a comma", () => {
   const f = resolveFilters(new URLSearchParams("campaign_ids=1,2,3"), "2026-08-05");
-  assert.deepEqual(f.campaignIds, [1, 2, 3]);
+  assert.deepEqual(f.campaignIds, ["1", "2", "3"]);
 });

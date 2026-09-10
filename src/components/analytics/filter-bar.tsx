@@ -162,8 +162,12 @@ export function FilterBar() {
         <MultiSelect
           label="Campaigns"
           options={options?.campaigns ?? []}
-          selected={filters.campaignIds.map(String)}
-          onChange={(next) => setFilters({ campaignIds: next.map(Number) })}
+          /*
+           * Text on both sides now: the picker offers EmailBison bigints and
+           * Instantly uuids, and Number() on a uuid is NaN.
+           */
+          selected={filters.campaignIds}
+          onChange={(next) => setFilters({ campaignIds: next })}
           emptyText="No campaigns found"
         />
       ) : null}

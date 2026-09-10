@@ -54,7 +54,7 @@ export async function GET(request: NextRequest) {
 
   const positiveOnly = request.nextUrl.searchParams.get("positive") === "1";
   const clientIds = filters.clientIds.length ? filters.clientIds : null;
-  const campaignIds = filters.campaignIds.length ? filters.campaignIds : null;
+  const campaignIds = filters.emailbisonCampaignIds.length ? filters.emailbisonCampaignIds : null;
   const sb = getSupabase();
 
   /*
@@ -70,7 +70,8 @@ export async function GET(request: NextRequest) {
    */
   const scope = resolvePlatformScope({
     platforms: filters.platforms,
-    campaignIds: filters.campaignIds,
+    emailbisonCampaignIds: filters.emailbisonCampaignIds,
+    instantlyCampaignIds: filters.instantlyCampaignIds,
   });
   const INSTANTLY_DIMENSIONS = new Set(["brokerage", "company", "esp", "mailbox_kind"]);
 

@@ -44,7 +44,7 @@ export async function GET(request: NextRequest) {
       p_team_id: teamId,
       p_from: filters.from,
       p_to: filters.to,
-      p_campaign_ids: filters.campaignIds.length ? filters.campaignIds : null,
+      p_campaign_ids: filters.emailbisonCampaignIds.length ? filters.emailbisonCampaignIds : null,
       p_client_ids: filters.clientIds.length ? filters.clientIds : null,
     });
     if (error) throw new Error(error.message);
@@ -96,9 +96,17 @@ export async function GET(request: NextRequest) {
      */
     const scope = resolvePlatformScope({
       platforms: filters.platforms,
-      campaignIds: filters.campaignIds,
+      emailbisonCampaignIds: filters.emailbisonCampaignIds,
+      instantlyCampaignIds: filters.instantlyCampaignIds,
     });
-    const wantsInstantly = scope.instantly;
+    /*
+     * analytics_instantly_client_rows takes no campaign parameter, so it cannot
+     * honour a campaign selection. Rather than pass the filter and have it
+     * ignored — the exact failure this whole audit chased — Instantly is taken
+     * out of scope whenever any campaign is selected, and the row simply is not
+     * added.
+     */
+    const wantsInstantly = scope.instantly && filters.campaignIds.length === 0;
     const wantsEmailBison = scope.emailbison;
 
     let merged = wantsEmailBison ? rows : [];

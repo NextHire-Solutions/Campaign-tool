@@ -134,10 +134,22 @@ function listOf() {
 const UUID_RE =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
-function parseId(raw: string): number {
+/*
+ * A campaign id from EITHER platform, kept as text.
+ *
+ * EmailBison keys with a bigint and Instantly with a uuid, and the picker now
+ * offers both — so this one filter has to carry both. Text is the only type
+ * that holds them without lying about either; the derived arrays below hand
+ * each route exactly the ids its own tables understand.
+ *
+ * The two spaces cannot collide (a uuid is never a valid bigint), which is what
+ * makes splitting them by shape afterwards sound rather than a guess.
+ */
+function parseCampaignId(raw: string): string {
+  if (UUID_RE.test(raw)) return raw;
   const id = Number(raw);
-  if (!Number.isInteger(id) || id <= 0) throw new Error("not a positive int");
-  return id;
+  if (!Number.isInteger(id) || id <= 0) throw new Error("not a campaign id");
+  return String(id);
 }
 
 function parseUuid(raw: string): string {
@@ -168,7 +180,7 @@ export const filtersSchema = z.object({
   preset: z.enum(PRESETS).optional(),
   from: isoDate.optional(),
   to: isoDate.optional(),
-  campaign_ids: csvOf(parseId, "campaign id"),
+  campaign_ids: csvOf(parseCampaignId, "campaign id"),
   client_ids: csvOf(parseUuid, "client id"),
   platforms: csvOf(parsePlatform, "platform"),
   /*
@@ -193,7 +205,12 @@ export interface ResolvedFilters {
   preset: Preset;
   from: string;
   to: string;
-  campaignIds: number[];
+  /** Every selected campaign, as text — both platforms share this filter. */
+  campaignIds: string[];
+  /** The EmailBison half, as the integers its tables key on. */
+  emailbisonCampaignIds: number[];
+  /** The Instantly half, as the uuids its tables key on. */
+  instantlyCampaignIds: string[];
   clientIds: string[];
   /** Empty = every platform, which is what an absent filter means. */
   platforms: Platform[];
@@ -262,6 +279,14 @@ export function resolveFilters(
     from,
     to,
     campaignIds: parsed.campaign_ids,
+    /*
+     * Split by shape, once, here — so no route has to work out which ids it can
+     * use and none can accidentally send a uuid to a bigint column.
+     */
+    emailbisonCampaignIds: parsed.campaign_ids
+      .filter((id) => !UUID_RE.test(id))
+      .map(Number),
+    instantlyCampaignIds: parsed.campaign_ids.filter((id) => UUID_RE.test(id)),
     clientIds: parsed.client_ids,
     platforms: parsed.platforms,
     replyFacets: {

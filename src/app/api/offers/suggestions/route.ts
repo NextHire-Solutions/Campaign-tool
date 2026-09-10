@@ -31,7 +31,7 @@ export async function GET(request: NextRequest) {
     p_team_id: Number(process.env.EMAILBISON_TEAM_ID || 2),
     p_from: filters.from,
     p_to: filters.to,
-    p_campaign_ids: filters.campaignIds.length ? filters.campaignIds : null,
+    p_campaign_ids: filters.emailbisonCampaignIds.length ? filters.emailbisonCampaignIds : null,
     p_client_ids: filters.clientIds.length ? filters.clientIds : null,
   });
 

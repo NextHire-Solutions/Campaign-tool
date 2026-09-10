@@ -351,6 +351,53 @@ console.log("\n— replies honour the platform —");
   }
 }
 
+console.log("\n— the campaign picker covers both platforms —");
+{
+  const options = await get("/api/analytics/filters");
+  const all = options.campaigns ?? [];
+  const uuids = all.filter((c) => /^[0-9a-f-]{36}$/i.test(String(c.value)));
+  if (!uuids.length) {
+    bad("the picker offers Instantly campaigns", `${all.length} offered, none Instantly`);
+  } else {
+    ok("the picker offers Instantly campaigns", `${all.length} total, ${uuids.length} Instantly`);
+
+    /*
+     * Selecting one must NARROW to it, not return the workspace. `null` means
+     * "no restriction" in every one of these RPCs, so the failure mode is
+     * always the same and always looks plausible.
+     */
+    /*
+     * A campaign that actually SENT in the window. `hint` is a lifetime total,
+     * so picking on it lands on campaigns that sent nothing recently — the
+     * assertion still holds (a broken filter returns the whole workspace, not
+     * zero) but 0 → 0 proves far less than a real number does.
+     */
+    const inWindow = await get("/api/analytics/campaigns?preset=90d&platforms=instantly");
+    const busiest = (inWindow.rows ?? []).find((r) => Number(r.sent) > 0);
+    const one = busiest
+      ? { value: busiest.campaignId, hint: String(busiest.sent) }
+      : uuids[0];
+    const whole = await get("/api/analytics/kpis?preset=90d&platforms=instantly");
+    const scoped = await get(`/api/analytics/kpis?preset=90d&campaign_ids=${one.value}`);
+    const wholeSent = Number(whole?.current?.sent ?? 0);
+    const scopedSent = Number(scoped?.current?.sent ?? 0);
+
+    if (!(scoped?.coverage?.platforms ?? []).includes("instantly")) {
+      bad("picking an Instantly campaign scopes to Instantly", `coverage=${JSON.stringify(scoped?.coverage?.platforms)}`);
+    } else if (scopedSent >= wholeSent) {
+      bad("an Instantly campaign filter narrows", `${wholeSent} → ${scopedSent} — the filter did not apply`);
+    } else if (busiest && scopedSent === 0) {
+      bad("an Instantly campaign filter narrows", `picked a campaign that sent ${busiest.sent} but got 0`);
+    } else {
+      ok("an Instantly campaign filter narrows", `${wholeSent} → ${scopedSent}`);
+    }
+
+    const table = await get(`/api/analytics/campaigns?preset=90d&campaign_ids=${one.value}`);
+    if ((table.rows ?? []).length === 1) ok("the campaigns table narrows to it", (table.rows[0] ?? {}).campaignName);
+    else bad("the campaigns table narrows to it", `${(table.rows ?? []).length} rows`);
+  }
+}
+
 console.log("\n— clients and copy span both platforms —");
 {
   /*

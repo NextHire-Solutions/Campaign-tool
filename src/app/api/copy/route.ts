@@ -68,7 +68,7 @@ export async function GET(request: NextRequest) {
     p_from: filters.from,
     p_to: filters.to,
     p_client_ids: filters.clientIds.length ? filters.clientIds : null,
-    p_campaign_ids: filters.campaignIds.length ? filters.campaignIds : null,
+    p_campaign_ids: filters.emailbisonCampaignIds.length ? filters.emailbisonCampaignIds : null,
   };
 
   /*
@@ -83,7 +83,8 @@ export async function GET(request: NextRequest) {
    */
   const platformScope = resolvePlatformScope({
     platforms: filters.platforms,
-    campaignIds: filters.campaignIds,
+    emailbisonCampaignIds: filters.emailbisonCampaignIds,
+    instantlyCampaignIds: filters.instantlyCampaignIds,
   });
   const wantsInstantly =
     filters.campaignIds.length === 0 &&

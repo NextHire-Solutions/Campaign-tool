@@ -228,7 +228,7 @@ export async function loadKpis(
     p_team_id: teamId,
     p_from: filters.from,
     p_to: filters.to,
-    p_campaign_ids: filters.campaignIds.length ? filters.campaignIds : null,
+    p_campaign_ids: filters.emailbisonCampaignIds.length ? filters.emailbisonCampaignIds : null,
     p_client_ids: filters.clientIds.length ? filters.clientIds : null,
   };
 
@@ -237,7 +237,7 @@ export async function loadKpis(
       sb.rpc("analytics_kpis", { ...args, p_compare: filters.compare }),
       sb.rpc("analytics_reply_timing", args),
       fetchFollowUpOverall(filters.from, filters.to),
-      fetchProspects(filters.from, filters.to, filters.campaignIds),
+      fetchProspects(filters.from, filters.to, filters.emailbisonCampaignIds),
       filters.compare && filters.compareFrom && filters.compareTo
         ? sb.rpc("analytics_reply_timing", {
             ...args,
@@ -249,7 +249,7 @@ export async function loadKpis(
         ? fetchFollowUpOverall(filters.compareFrom, filters.compareTo)
         : Promise.resolve(null),
       filters.compare && filters.compareFrom && filters.compareTo
-        ? fetchProspects(filters.compareFrom, filters.compareTo, filters.campaignIds)
+        ? fetchProspects(filters.compareFrom, filters.compareTo, filters.emailbisonCampaignIds)
         : Promise.resolve(null),
     ]);
 
@@ -307,7 +307,8 @@ export async function loadKpis(
    */
   const scope = resolvePlatformScope({
     platforms: filters.platforms,
-    campaignIds: filters.campaignIds,
+    emailbisonCampaignIds: filters.emailbisonCampaignIds,
+    instantlyCampaignIds: filters.instantlyCampaignIds,
   });
   const wantsInstantly = scope.instantly;
   const wantsEmailBison = scope.emailbison;
@@ -331,10 +332,16 @@ export async function loadKpis(
       p_team_id: teamId,
       p_from: filters.from,
       p_to: filters.to,
-      // Instantly campaigns are UUID-keyed, so an EmailBison campaign filter
-      // cannot apply to them; a client filter can, and does.
       p_client_ids: filters.clientIds.length ? filters.clientIds : null,
-      p_campaign_ids: null,
+      /*
+       * The Instantly half of the campaign filter. This was null while the
+       * picker could only offer EmailBison ids; null means "no restriction", so
+       * once Instantly campaigns became selectable it would have returned the
+       * whole workspace for a single selected campaign.
+       */
+      p_campaign_ids: filters.instantlyCampaignIds.length
+        ? filters.instantlyCampaignIds
+        : null,
     });
     if (instError) throw new Error(`analytics_instantly_kpis: ${instError.message}`);
 

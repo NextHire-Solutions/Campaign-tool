@@ -22,8 +22,10 @@
 export interface PlatformScopeInput {
   /** Empty means "not narrowed", which is not the same as "both". */
   platforms: readonly string[];
-  /** EmailBison campaign ids. Instantly campaigns are UUID-keyed. */
-  campaignIds: readonly number[];
+  /** The EmailBison half of the campaign filter. */
+  emailbisonCampaignIds: readonly number[];
+  /** The Instantly half. The picker offers both, so both can be selected. */
+  instantlyCampaignIds: readonly string[];
 }
 
 export interface PlatformScope {
@@ -47,22 +49,44 @@ export interface PlatformScope {
  * and says so on screen.
  */
 export function resolvePlatformScope(input: PlatformScopeInput): PlatformScope {
-  const { platforms, campaignIds } = input;
+  const { platforms, emailbisonCampaignIds, instantlyCampaignIds } = input;
+  const anyCampaignFilter =
+    emailbisonCampaignIds.length > 0 || instantlyCampaignIds.length > 0;
 
-  const emailbison = platforms.length === 0 || platforms.includes("emailbison");
-  const askedForInstantly = platforms.includes("instantly");
+  let emailbison = platforms.length === 0 || platforms.includes("emailbison");
+  /*
+   * SELECTING AN INSTANTLY CAMPAIGN IS ASKING FOR INSTANTLY.
+   *
+   * An empty platform filter otherwise means EmailBison (see below), so picking
+   * an Instantly campaign and nothing else produced a scope of NEITHER platform
+   * — an empty band, from a filter the user had just set. Naming a campaign is
+   * a more specific request than leaving the platform blank, so it wins.
+   */
+  let instantly =
+    platforms.includes("instantly") ||
+    (platforms.length === 0 && instantlyCampaignIds.length > 0);
 
   /*
-   * A campaign selection is a list of specific campaigns. Since every id in it
-   * is an EmailBison integer, no Instantly campaign is in the selection, so
-   * Instantly's correct contribution is zero rows — the same answer you would
-   * get from a filter that could express it.
+   * A CAMPAIGN SELECTION NAMES SPECIFIC CAMPAIGNS, so a platform with none of
+   * them in the selection contributes nothing.
+   *
+   * This used to exclude Instantly from ANY campaign filter, because the filter
+   * could only hold EmailBison integers — true then, and wrong now that the
+   * picker offers both. The rule it was standing in for is the real one: a
+   * platform is in scope only if the selection contains at least one of its
+   * campaigns. `p_campaign_ids: null` meaning "no restriction" is what made
+   * getting this wrong so expensive — it returned an entire workspace.
    */
-  if (askedForInstantly && campaignIds.length > 0) {
-    return { emailbison, instantly: false, instantlyExcludedBy: "campaign-filter" };
+  let instantlyExcludedBy: PlatformScope["instantlyExcludedBy"];
+  if (anyCampaignFilter) {
+    if (instantly && instantlyCampaignIds.length === 0) {
+      instantly = false;
+      instantlyExcludedBy = "campaign-filter";
+    }
+    if (emailbison && emailbisonCampaignIds.length === 0) emailbison = false;
   }
 
-  return { emailbison, instantly: askedForInstantly };
+  return { emailbison, instantly, ...(instantlyExcludedBy ? { instantlyExcludedBy } : {}) };
 }
 
 /** The platforms a response actually covers, for the `coverage` field. */
