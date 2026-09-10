@@ -195,10 +195,18 @@ async function connect() {
     }
   };
 
-  /** Clicks by real mouse events — a synthetic .click() skips Radix handlers. */
-  const clickText = async (label) => {
+  /*
+   * Clicks by real mouse events — a synthetic .click() skips Radix handlers.
+   *
+   * `scope` is not optional decoration. The campaigns view has TWO buttons
+   * reading "Replies" (a column header and a sub-view tab); clicking the first
+   * match navigated away and left an empty table, which the sort check then
+   * read as a successful re-sort. Naming the container is what makes a click
+   * unambiguous.
+   */
+  const clickText = async (label, scope = "button") => {
     const box = await evaluate(`(() => {
-      const el = Array.from(document.querySelectorAll('button'))
+      const el = Array.from(document.querySelectorAll(${JSON.stringify(scope)}))
         .find(e => (e.innerText || '').trim() === ${JSON.stringify(label)});
       if (!el) return null;
       const r = el.getBoundingClientRect();
@@ -346,6 +354,93 @@ console.log("");
       pass("campaign filter × platform", `${first.campaignName}: ${eb} sent, no leak`);
     }
   }
+}
+
+/*
+ * CLIENT-SIDE CONTROLS. These never reach an API — normalize, volume/rates, the
+ * series toggles and the table sorts all reshape data already in the browser —
+ * so an API check cannot see them at all. They are asserted on what the chart
+ * and tables actually render.
+ */
+console.log("");
+{
+  /*
+   * The Y AXIS ONLY. Collecting every <text> in the svg mixes the date labels
+   * in, and those never change — so "rates rescales the axis" compared two
+   * strings that were identical for their first 40 visible characters and
+   * passed on a difference buried past them. The value axis is the thing these
+   * controls actually rescale, so that is what gets compared.
+   */
+  const chartShape = `(() => {
+    const nums = Array.from(document.querySelectorAll('svg text'))
+      .map(t => (t.textContent || '').trim())
+      .filter(v => /^[\\d.,]+[KM]?%?$/.test(v));
+    const paths = Array.from(document.querySelectorAll('svg path'))
+      .map(p => (p.getAttribute('d') || '').length).filter(Boolean);
+    return { paths: paths.join(','), yAxis: nums.join('|') };
+  })()`;
+
+  await goto("/analytics/campaign?preset=30d&view=charts&series=sent");
+  const volume = await evaluate(chartShape);
+  await goto("/analytics/campaign?preset=30d&view=charts&series=sent&mode=rates");
+  const rates = await evaluate(chartShape);
+  if (!volume?.paths) fail("chart renders a series", "no path drawn");
+  else if (!volume.yAxis) fail("chart draws a value axis", "no numeric ticks");
+  else if (volume.yAxis === rates.yAxis) fail("mode=rates rescales the axis", `unchanged: ${volume.yAxis}`);
+  else pass("mode=rates rescales the axis", `${volume.yAxis} → ${rates.yAxis}`);
+
+  await goto("/analytics/campaign?preset=30d&view=charts&series=sent,replies&normalize=1");
+  const norm = await evaluate(chartShape);
+  if (!norm?.yAxis) fail("normalize renders", "no value axis");
+  else if (norm.yAxis === volume.yAxis) fail("normalize rescales the axis", `unchanged: ${norm.yAxis}`);
+  else pass("normalize rescales the axis", `${volume.yAxis} → ${norm.yAxis}`);
+
+  await goto("/analytics/campaign?preset=30d&view=charts&series=sent");
+  const one = await evaluate(chartShape);
+  await goto("/analytics/campaign?preset=30d&view=charts&series=sent,replies,bounces");
+  const three = await evaluate(chartShape);
+  const count = (v) => (v?.paths ? v.paths.split(",").length : 0);
+  if (count(three) <= count(one)) fail("series= draws more lines", `${count(one)} → ${count(three)}`);
+  else pass("series= draws more lines", `${count(one)} → ${count(three)} paths`);
+
+  await goto("/analytics/campaign?preset=30d&view=charts&series=sent&exclude_weekends=1");
+  const noWeekend = await evaluate(`(document.body.innerText.match(/\\b(Sat|Sun)\\b/g) || []).length`);
+  if (noWeekend > 0) fail("exclude_weekends hides weekend ticks", `${noWeekend} weekend labels still drawn`);
+  else pass("exclude_weekends hides weekend ticks");
+
+  // Sub-views must render different tables, not the same one relabelled.
+  const firstRow = `(() => {
+    const r = document.querySelector('table tbody tr, [role="row"]');
+    return (r?.innerText || '').replace(/\\s+/g, ' ').slice(0, 60);
+  })()`;
+  await goto("/analytics/campaign?preset=30d&view=clients");
+  const clientsRow = await evaluate(firstRow);
+  await goto("/analytics/campaign?preset=30d&view=campaigns");
+  const campaignsRow = await evaluate(firstRow);
+  if (!clientsRow || !campaignsRow) fail("sub-views render rows", `clients="${clientsRow}" campaigns="${campaignsRow}"`);
+  else if (clientsRow === campaignsRow) fail("Clients and Campaigns are different tables", "identical first row");
+  else pass("Clients and Campaigns are different tables");
+
+  // Table sorting, clicked for real.
+  await goto("/analytics/campaign?preset=30d&view=campaigns");
+  const before = await evaluate(firstRow);
+  const clicked = await clickText("Replies", "th, th button");
+  /*
+   * Wait for a NON-EMPTY row before comparing. Reading straight after the click
+   * caught the table mid-rerender and returned "", which differs from the old
+   * row and so reported a pass — a sort that never happened would look
+   * identical. An empty row is now an explicit failure.
+   */
+  let after = "";
+  for (let i = 0; i < 20; i++) {
+    await new Promise((r) => setTimeout(r, 400));
+    after = await evaluate(firstRow);
+    if (after) break;
+  }
+  if (!clicked) fail("clicking a column header sorts", "no Replies header found");
+  else if (!after) fail("clicking a column header sorts", "table never re-rendered a row");
+  else if (before === after) fail("clicking a column header sorts", "top row unchanged");
+  else pass("clicking a column header sorts", `${before.slice(0, 26)} → ${after.slice(0, 26)}`);
 }
 
 close();

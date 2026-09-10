@@ -69,6 +69,9 @@ const metric = {
    */
   mgmtTotal: (j) => Number(j?.total ?? NaN),
   problems: (j) => (j?.problems ?? []).length,
+  breakdownTotal: (j) => (j?.breakdowns ?? []).reduce((n, b) => n + Number(b.total ?? 0), 0),
+  replyRows: (j) => Number(j?.total ?? NaN),
+  firstLabel: (j) => String((j?.rows ?? [])[0]?.label ?? (j?.rows ?? [])[0]?.domain ?? ""),
 };
 
 /**
@@ -196,6 +199,63 @@ await check("positive=1 narrows the reply set",
   "/api/analytics/replies?preset=90d&positive=1",
   (j) => (j.breakdowns ?? []).reduce((n, b) => n + Number(b.total ?? 0), 0));
 
+console.log("\n— chart controls (server-side) —");
+/*
+ * exclude_weekends is applied in SQL, not in the chart component, so it is
+ * checkable here. normalize / mode / series are client-side and belong to the
+ * browser pass in smoke.mjs.
+ */
+{
+  const a = await get("/api/analytics/timeseries?preset=30d");
+  const b = await get("/api/analytics/timeseries?preset=30d&exclude_weekends=1");
+  const days = (j) => (j.points ?? []).length;
+  if (days(b) >= days(a)) bad("exclude_weekends drops weekend days", `${days(a)} → ${days(b)}`);
+  else ok("exclude_weekends drops weekend days", `${days(a)} → ${days(b)} days`);
+}
+
+console.log("\n— reply facets & drill-down —");
+{
+  const facets = await get("/api/analytics/replies/facets?preset=90d");
+  for (const [key, param] of [
+    ["company", "reply_company"],
+    ["location", "reply_location"],
+    ["sales_volume", "reply_sales_volume"],
+  ]) {
+    const v = (facets?.facets?.[key] ?? [])[0]?.value;
+    if (!v) { bad(`${param} narrows replies`, "no facet value offered"); continue; }
+    await check(`${param} narrows replies`,
+      "/api/analytics/replies?preset=90d",
+      `/api/analytics/replies?preset=90d&${param}=${encodeURIComponent(v)}`,
+      metric.breakdownTotal);
+  }
+
+  // The drill-down: clicking a bar must narrow the list to that bucket.
+  const cards = await get("/api/analytics/replies?preset=90d");
+  const dim = (cards.breakdowns ?? []).find((b) => (b.rows ?? []).length);
+  const val = dim?.rows?.[0]?.value;
+  if (dim && val) {
+    await check(`dimension=${dim.key} drill narrows the reply list`,
+      "/api/analytics/replies/rows?preset=90d",
+      `/api/analytics/replies/rows?preset=90d&dimension=${encodeURIComponent(dim.key)}&value=${encodeURIComponent(val)}`,
+      metric.replyRows);
+  } else {
+    bad("reply drill-down", "no dimension with rows to drill into");
+  }
+
+  await check("q= narrows the reply list",
+    "/api/analytics/replies/rows?preset=90d",
+    "/api/analytics/replies/rows?preset=90d&q=zzzznomatch", metric.replyRows);
+
+  // Paging the reply list.
+  const p1 = await get("/api/analytics/replies/rows?preset=90d&page=1");
+  const p2 = await get("/api/analytics/replies/rows?preset=90d&page=2");
+  const ids1 = (p1.rows ?? []).map((r) => r.id ?? r.reply_id).join(",");
+  const ids2 = (p2.rows ?? []).map((r) => r.id ?? r.reply_id).join(",");
+  if (!ids1) bad("page= pages the reply list", "no rows on page 1");
+  else if (ids1 === ids2) bad("page= pages the reply list", "page 2 identical to page 1");
+  else ok("page= pages the reply list", `${p1.total} replies, distinct pages`);
+}
+
 console.log("\n— campaigns management page —");
 await check("q= narrows the campaign list",
   "/api/campaigns?limit=500", "/api/campaigns?limit=500&q=nicole", metric.mgmtTotal);
@@ -260,6 +320,24 @@ await check("min_total raises the table's floor",
 await check("min_sent raises the attention card's floor",
   "/api/infrastructure?estate=emailbison&view=domain&min_sent=1",
   "/api/infrastructure?estate=emailbison&view=domain&min_sent=1000000", metric.problems);
+/*
+ * Asserted on the ORDER ITSELF, not on a proxy. This first compared the length
+ * of the top label, which two different domains can share — a check that can
+ * pass by coincidence is not a check.
+ */
+{
+  const desc = await get("/api/infrastructure?estate=emailbison&view=domain&sort=sent&dir=desc");
+  const asc = await get("/api/infrastructure?estate=emailbison&view=domain&sort=sent&dir=asc");
+  const sents = (j) => (j.rows ?? []).map((r) => Number(r.sent ?? 0));
+  const d = sents(desc), a = sents(asc);
+  const sortedDesc = d.every((v, i) => i === 0 || d[i - 1] >= v);
+  const sortedAsc = a.every((v, i) => i === 0 || a[i - 1] <= v);
+  if (!d.length) bad("sort=sent orders infrastructure rows", "no rows");
+  else if (!sortedDesc) bad("sort=sent&dir=desc is actually descending", `top: ${d.slice(0, 3).join(", ")}`);
+  else if (!sortedAsc) bad("sort=sent&dir=asc is actually ascending", `top: ${a.slice(0, 3).join(", ")}`);
+  else if (d[0] === a[0] && d.length > 1) bad("dir flips the order", `both start at ${d[0]}`);
+  else ok("sort=sent honours dir", `desc starts ${d[0]}, asc starts ${a[0]}`);
+}
 await check("rcpt=domain differs from rcpt=esp",
   "/api/infrastructure?estate=emailbison&view=domain&rcpt=esp",
   "/api/infrastructure?estate=emailbison&view=domain&rcpt=domain",
