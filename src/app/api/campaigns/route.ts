@@ -35,7 +35,13 @@ export async function GET(request: NextRequest) {
     .from("campaigns")
     .select(
       "id, name, status, type, tags, total_leads, lifetime_emails_sent, lifetime_unique_replies, completion_percentage, max_emails_per_day, eb_created_at, eb_updated_at",
-      { count: "estimated" },
+      /*
+       * EXACT, not estimated. `estimated` reads the planner's row estimate,
+       * which ignores the filters entirely on a small table — that is how the
+       * header came to read 184 above three rows. At this size the count costs
+       * nothing; rule 7's warning is about `replies`, which is 100× larger.
+       */
+      { count: "exact" },
     )
     .eq("team_id", teamId)
     // Deleted upstream: kept for history, never offered as a choice.
@@ -45,6 +51,82 @@ export async function GET(request: NextRequest) {
   // `ilike` with a leading wildcard can't use a btree index, but at 95 rows
   // that is irrelevant; revisit with a trigram index if this grows.
   if (search) query = query.ilike("name", `%${search}%`);
+
+  /*
+   * CLIENT AND TAG ARE FILTERED IN SQL, BEFORE PAGING. They used to be applied
+   * in JS to the already-paged rows, which broke both halves of the answer:
+   *
+   *   - `total` came from the SQL count, which knew nothing about the JS
+   *     filtering. The page rendered "184" above a list of 3. That number is
+   *     the header count AND the pagination basis, so it was wrong twice.
+   *   - The filter only ever saw the current page. It happens to be correct
+   *     today because the default page (200) is larger than the workspace
+   *     (184); it would start silently dropping matches the moment that stops
+   *     being true, with no error and no visible symptom.
+   *
+   * `tags` is a jsonb array of tag OBJECTS, so the match is containment of
+   * `[{"name": …}]` rather than equality — verified to select the same 3
+   * campaigns the JS predicate did.
+   */
+  /*
+   * `.contains()` serialises to a POSTGRES ARRAY literal — `{...}` — which a
+   * jsonb column rejects with "invalid input syntax for type json". The raw
+   * `cs` filter with a JSON string is the form jsonb containment needs.
+   */
+  if (tag) query = query.filter("tags", "cs", JSON.stringify([{ name: tag }]));
+
+  if (clientId) {
+    /*
+     * Three kinds of choice, and every campaign belongs to exactly one:
+     * a named client, "unassigned", or "excluded". The excluded ones are
+     * offered deliberately — they are kept out of client reporting (internal
+     * tests and the Interested/Not-Interested routing lists) so they carry no
+     * client, and "Unassigned" excludes them too. A filter whose options
+     * cannot between them reach every row is one that hides work.
+     */
+    // campaign_clients has no team_id — it is keyed by campaign_id alone, and
+    // scoping it to a team here returned nothing, which turned "unassigned"
+    // into "everything".
+    const { data: maps } = await sb
+      .from("campaign_clients")
+      .select("campaign_id, client_id, excluded");
+    const rowsOf = (maps ?? []) as Array<{
+      campaign_id: number;
+      client_id: string | null;
+      excluded: boolean;
+    }>;
+
+    if (clientId === "unassigned") {
+      /*
+       * "No client AND not excluded" — so the complement must remove BOTH the
+       * assigned and the excluded, not just the assigned. Removing only the
+       * assigned left the 20 excluded campaigns in, making "Unassigned" and
+       * "Excluded" return the same 20 rows and the three options stop
+       * partitioning the workspace.
+       *
+       * Verified against SQL: 157 assigned + 7 unassigned + 20 excluded = 184.
+       */
+      const spokenFor = rowsOf
+        .filter((m) => m.excluded || m.client_id !== null)
+        .map((m) => m.campaign_id);
+      if (spokenFor.length) query = query.not("id", "in", `(${spokenFor.join(",")})`);
+    } else {
+      const wanted = rowsOf
+        .filter((m) =>
+          clientId === "excluded"
+            ? m.excluded
+            : m.client_id === clientId && !m.excluded,
+        )
+        .map((m) => m.campaign_id);
+      /*
+       * An empty match must return nothing, not everything. `.in("id", [])` is
+       * the one case PostgREST turns into a no-op, so it is spelled out — this
+       * is the same "null means no restriction" trap that let the campaign
+       * filter leak an entire platform into the totals.
+       */
+      query = wanted.length ? query.in("id", wanted) : query.eq("id", -1);
+    }
+  }
 
   const [{ data: rows, error, count }, mappings, clients, counts, allTags] = await Promise.all([
     query.order("lifetime_emails_sent", { ascending: false, nullsFirst: false })
@@ -65,7 +147,7 @@ export async function GET(request: NextRequest) {
   const clientById = new Map((clients.data ?? []).map((c) => [c.id, c.name]));
   const mapByCampaign = new Map((mappings.data ?? []).map((m) => [m.campaign_id, m]));
 
-  let items = (rows ?? []).map((c) => {
+  const items = (rows ?? []).map((c) => {
     const mapping = mapByCampaign.get(c.id);
     return {
       ...c,
@@ -75,41 +157,6 @@ export async function GET(request: NextRequest) {
       ambiguous: Boolean(mapping?.ambiguous),
     };
   });
-
-  /*
-   * Filtered in JS, not SQL. `tags` is a jsonb array of objects and the filter
-   * matches on the NAME inside them, which PostgREST cannot express without a
-   * containment operator over the whole object. At ~100 campaigns already
-   * fetched, doing it here is free; at ten times that it wants a GIN index and
-   * an RPC.
-   */
-  if (tag) {
-    items = items.filter((c) =>
-      (Array.isArray(c.tags) ? c.tags : []).some(
-        (t: unknown) =>
-          typeof t === "object" && t !== null && (t as { name?: string }).name === tag,
-      ),
-    );
-  }
-
-  /*
-   * Three kinds of choice, and every campaign belongs to exactly one of them —
-   * 152 named + 10 unassigned + 17 excluded = 179, the whole workspace.
-   *
-   * "excluded" is offered because otherwise those 17 are reachable by NO option:
-   * they are deliberately kept out of client reporting (internal tests and the
-   * Interested/Not-Interested routing lists), so they carry no client, but
-   * "Unassigned" excludes them too. A filter whose options cannot between them
-   * reach every row is one that hides work.
-   */
-  if (clientId) {
-    items =
-      clientId === "unassigned"
-        ? items.filter((c) => !c.clientId && !c.excluded)
-        : clientId === "excluded"
-          ? items.filter((c) => c.excluded)
-          : items.filter((c) => c.clientId === clientId && !c.excluded);
-  }
 
   const statusCounts: Record<string, number> = {};
   for (const row of counts.data ?? []) {

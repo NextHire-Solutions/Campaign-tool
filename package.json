@@ -10,7 +10,8 @@
     "typecheck": "tsc --noEmit -p .",
     "test": "node --test 'src/**/*.test.ts'",
     "probe": "node --env-file=.env.local scripts/probe-eb.mjs",
-    "smoke": "node scripts/smoke.mjs"
+    "smoke": "node scripts/smoke.mjs",
+    "check:filters": "node scripts/check-filters.mjs"
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.58.0",
