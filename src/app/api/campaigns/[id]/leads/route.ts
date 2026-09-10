@@ -1,5 +1,6 @@
 import { NextResponse, type NextRequest } from "next/server";
 import { getSupabase } from "@/lib/supabase/server";
+import { platformOfId } from "@/lib/campaigns/campaign-id.ts";
 
 /*
  * One page of a campaign's leads (the Leads tab on the campaign page).
@@ -28,10 +29,18 @@ export async function GET(
   { params }: { params: Promise<{ id: string }> },
 ) {
   const { id } = await params;
-  const campaignId = Number(id);
-  if (!Number.isInteger(campaignId) || campaignId <= 0) {
+  /*
+   * The platform is read off the id's SHAPE. That is sound here and only here:
+   * the path IS the id, so there is no pair to carry a platform in, and the two
+   * key spaces cannot collide — a uuid is never a valid EmailBison id and an
+   * integer is never a valid Instantly one. A malformed id gets a 400 rather
+   * than being routed at one platform and reported as missing there.
+   */
+  const platform = platformOfId(id);
+  if (!platform) {
     return NextResponse.json({ error: "Invalid campaign id" }, { status: 400 });
   }
+  const campaignId = platform === "emailbison" ? Number(id) : id;
 
   const q = request.nextUrl.searchParams;
   const page = Math.max(1, Number(q.get("page") ?? 1));
@@ -65,12 +74,22 @@ export async function GET(
    * 067 exists to avoid.
    */
   if (q.get("ids") === "1") {
-    const { data, error } = await sb.rpc("analytics_campaign_lead_ids", {
+    const { data, error } = await sb.rpc(
+      platform === "instantly" ? "analytics_instantly_lead_ids" : "analytics_campaign_lead_ids",
+      platform === "instantly"
+        ? {
+            p_team_id: teamId,
+            p_campaign_id: campaignId,
+            p_search: search,
+            p_status: status.length ? status : null,
+          }
+        : {
       p_team_id: teamId,
       p_campaign_id: campaignId,
       p_search: search,
       p_status: status.length ? status : null,
-    });
+    },
+    );
     if (error) {
       console.error("[api/campaigns/leads:ids]", error);
       return NextResponse.json({ error: error.message }, { status: 500 });
@@ -80,8 +99,84 @@ export async function GET(
      * truncated at 1,000 by PostgREST without a word, and "select all 6,288"
      * would quietly select 1,000.
      */
-    const ids = (data ?? []) as number[];
+    // Instantly lead ids are uuids; EmailBison's are integers. Both travel as
+    // themselves — coercing either would break the removal call.
+    const ids = (data ?? []) as Array<number | string>;
     return NextResponse.json({ leadIds: ids, total: ids.length });
+  }
+
+  /*
+   * INSTANTLY'S ROWS ARE A DIFFERENT SHAPE, not a subset. It has no step
+   * counter, no per-lead sender, no per-lead bounce signal and no lead
+   * attributes — so those come back absent rather than zeroed, and the
+   * formatters render a dash. A 0 would read as "this lead was never opened"
+   * when the truth is "Instantly does not report it".
+   */
+  if (platform === "instantly") {
+    const { data, error } = await sb.rpc("analytics_instantly_lead_rows", {
+      p_team_id: teamId,
+      p_campaign_id: campaignId,
+      p_search: search,
+      p_status: status.length ? status : null,
+      p_limit: PAGE_SIZE,
+      p_offset: (page - 1) * PAGE_SIZE,
+    });
+    if (error) {
+      console.error("[api/campaigns/leads:instantly]", error);
+      return NextResponse.json({ error: error.message }, { status: 500 });
+    }
+    type InstRow = {
+      lead_id: string; email: string | null; first_name: string | null;
+      last_name: string | null; company: string | null; status: string;
+      raw_status: number | null; replies: number; opens: number;
+      last_sent_at: string | null; total_count: number;
+    };
+    const list = (data ?? []) as InstRow[];
+    const total = Number(list[0]?.total_count ?? 0);
+
+    /*
+     * Counted in SQL (086). This was a JS tally over the row RPC asking for
+     * every row, which PostgREST silently truncated at 1,000 — so a campaign of
+     * 12,080 leads showed facets summing to exactly 1,000. Rule 7, again.
+     */
+    let facetRows: Array<{ status: string; leads: number }> = [];
+    if (wantFacets) {
+      const { data: f } = await sb.rpc("analytics_instantly_lead_facets", {
+        p_team_id: teamId,
+        p_campaign_id: campaignId,
+      });
+      facetRows = (f ?? []) as Array<{ status: string; leads: number }>;
+    }
+
+    return NextResponse.json({
+      platform,
+      rows: list.map((r) => ({
+        leadId: r.lead_id,
+        email: r.email,
+        firstName: r.first_name,
+        lastName: r.last_name,
+        company: r.company,
+        title: null,
+        leadStatus: null,
+        status: r.status,
+        stepReached: null,
+        sends: null,
+        firstSentAt: null,
+        lastSentAt: r.last_sent_at,
+        opens: r.opens,
+        uniqueOpens: null,
+        clicks: null,
+        replies: r.replies,
+        positive: null,
+        bounces: null,
+        senderEmail: null,
+        attributes: {},
+      })),
+      page,
+      pageSize: PAGE_SIZE,
+      total,
+      facets: facetRows,
+    });
   }
 
   const [rows, facets] = await Promise.all([

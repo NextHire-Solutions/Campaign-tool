@@ -82,6 +82,12 @@ export const SCHEDULE = [
   { job: "sync-instantly-accounts", everyMinutes: 180 },
   // Pools change rarely; 3 hours is plenty and keeps this off the busy minutes.
   { job: "sync-instantly-account-tags", everyMinutes: 180 },
+  /*
+   * Resumable walk: 120 pages a run, ~4 runs to cover 40,482 leads, then it
+   * starts again. 30 minutes keeps the whole estate under an hour behind
+   * without holding the lock for long.
+   */
+  { job: "sync-instantly-leads", everyMinutes: 30 },
   // Costs nothing upstream — it only re-reads names we already hold.
   { job: "sync-instantly-clients", everyMinutes: 60 },
   // Asks which campaigns were active in the window first, so it makes one call

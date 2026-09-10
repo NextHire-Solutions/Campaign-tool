@@ -14,7 +14,8 @@
     "check:filters": "node scripts/check-filters.mjs",
     "verify:instantly": "node scripts/verify-instantly-writes.mjs",
     "verify:actions": "node scripts/verify-instantly-actions.mjs",
-    "verify:inboxes": "node scripts/verify-instantly-inboxes.mjs"
+    "verify:inboxes": "node scripts/verify-instantly-inboxes.mjs",
+    "verify:leads": "node scripts/verify-instantly-leads.mjs"
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.58.0",

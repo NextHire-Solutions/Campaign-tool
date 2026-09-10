@@ -31,6 +31,7 @@ import {
   syncInstantlyDayStatsDeep,
   syncInstantlyDayStatsBackfill,
   syncInstantlyAccountTags,
+  syncInstantlyLeads,
   syncInstantlyReplies,
   syncInstantlyRepliesBackfill,
   syncInstantlyRepliesDeep,
@@ -2034,6 +2035,7 @@ export const JOBS = {
   "sync-instantly-campaigns": syncInstantlyCampaigns,
   "sync-instantly-accounts": syncInstantlyAccounts,
   "sync-instantly-account-tags": syncInstantlyAccountTags,
+  "sync-instantly-leads": syncInstantlyLeads,
   // Pure SQL + string matching, no API calls at all.
   "sync-instantly-clients": syncInstantlyClients,
   "sync-instantly-day-stats": syncInstantlyDayStats,

@@ -499,6 +499,34 @@ export class InstantlyClient {
     return byEmail;
   }
 
+  /**
+   * One page of the workspace's leads, in cursor order.
+   *
+   * No campaign filter: the response carries each lead's `campaign`, so a
+   * single walk yields membership for every campaign at once. Filtering per
+   * campaign would be 318 walks for the same rows.
+   *
+   * Paged rather than exhaustive on purpose — a full walk is ~405 calls and
+   * about 4.4 minutes measured, against a 10-minute job lock, so the CALLER
+   * decides how much to do in one run and where to resume.
+   */
+  async listLeadsPage(options: { limit?: number; startingAfter?: string } = {}): Promise<{
+    items: Array<Record<string, unknown>>;
+    next?: string;
+  }> {
+    const res = await this.request<{
+      items?: Array<Record<string, unknown>>;
+      next_starting_after?: string;
+    }>("/leads/list", {
+      method: "POST",
+      body: {
+        limit: options.limit ?? 100,
+        ...(options.startingAfter ? { starting_after: options.startingAfter } : {}),
+      },
+    });
+    return { items: res?.items ?? [], next: res?.next_starting_after };
+  }
+
   /** Plan limits, so a caller can explain a refusal instead of retrying it. */
   async getLeadQuota(): Promise<{ limit: number; used: number; remaining: number }> {
     const plan = await this.request<{

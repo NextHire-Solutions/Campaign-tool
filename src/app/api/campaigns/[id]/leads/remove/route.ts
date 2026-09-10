@@ -3,6 +3,8 @@ import { cookies } from "next/headers";
 import { z } from "zod";
 import { AUTH_COOKIE, verifySessionToken } from "@/lib/auth";
 import { removeLeads } from "@/lib/campaigns/lead-membership.ts";
+import { removeInstantlyLeads } from "@/lib/campaigns/instantly-lead-membership.ts";
+import { platformOfId } from "@/lib/campaigns/campaign-id.ts";
 
 /*
  * Remove selected leads from a campaign.
@@ -26,7 +28,14 @@ const Body = z.object({
    * chunked server-side anyway, and an unbounded array is a way to hold a
    * request open for minutes.
    */
-  leadIds: z.array(z.number().int().positive()).min(1).max(20000),
+  /*
+   * Numbers for EmailBison, uuid strings for Instantly. Accepted as either and
+   * validated against the campaign's own platform below — a uuid sent at an
+   * EmailBison campaign is a caller bug, not something to coerce.
+   */
+  leadIds: z.array(z.union([z.number().int().positive(), z.string().min(1)]))
+    .min(1)
+    .max(20000),
   /*
    * Required, always. Unlike pause, this has no undo: EmailBison offers no
    * "restore removed leads" call, and re-adding is a separate deliberate act.
@@ -41,8 +50,8 @@ export async function POST(
   { params }: { params: Promise<{ id: string }> },
 ) {
   const { id } = await params;
-  const campaignId = Number(id);
-  if (!Number.isInteger(campaignId) || campaignId <= 0) {
+  const platform = platformOfId(id);
+  if (!platform) {
     return NextResponse.json({ error: "Invalid campaign id" }, { status: 400 });
   }
 
@@ -79,7 +88,41 @@ export async function POST(
    */
   const leadIds = [...new Set(parsed.data.leadIds)];
 
-  const result = await removeLeads(campaignId, leadIds, session.email, TEAM_ID());
+  if (platform === "instantly") {
+    /*
+     * Ids must MATCH THE PLATFORM. Instantly lead ids are uuids; a number here
+     * means the caller built the list against the wrong campaign, and sending
+     * it would delete whatever happened to match. Refused rather than filtered:
+     * a partly-wrong list is not a request anyone made.
+     */
+    if (leadIds.some((v) => typeof v !== "string")) {
+      return NextResponse.json(
+        { error: "Instantly lead ids are uuids; numeric ids were sent." },
+        { status: 400 },
+      );
+    }
+    const result = await removeInstantlyLeads(
+      id,
+      leadIds as string[],
+      session.email,
+      TEAM_ID(),
+    );
+    return NextResponse.json(result, { status: result.ok ? 200 : 207 });
+  }
+
+  if (leadIds.some((v) => typeof v !== "number")) {
+    return NextResponse.json(
+      { error: "EmailBison lead ids are integers; non-numeric ids were sent." },
+      { status: 400 },
+    );
+  }
+
+  const result = await removeLeads(
+    Number(id),
+    leadIds as number[],
+    session.email,
+    TEAM_ID(),
+  );
 
   return NextResponse.json(
     result,

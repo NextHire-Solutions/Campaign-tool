@@ -2,7 +2,7 @@ import { createInstantlyClient } from "@/lib/instantly/client.ts";
 import { getSupabase } from "@/lib/supabase/server";
 import { chunkUpsert } from "./jobs.ts";
 import { exclusionReason, matchCampaign } from "@/lib/clients/match.ts";
-import { setCursor } from "./runner";
+import { setCursor, setCursorText } from "./runner";
 import type { JobFn, JobResult } from "./runner";
 
 /*
@@ -549,6 +549,84 @@ export const syncInstantlyAccountTags: JobFn = async (): Promise<JobResult> => {
       tagged,
       untagged: rows.length - tagged,
       pools: [...new Set([...byEmail.values()].flat())].sort(),
+    },
+  };
+};
+
+/*
+ * Every lead in the workspace, with the campaign it belongs to.
+ *
+ * RESUMABLE, because a full walk is ~405 calls and about 4.4 minutes against a
+ * 10-minute job lock. Each run does a bounded number of pages and stores the
+ * cursor; the next run picks it up. When the walk ends the cursor is cleared,
+ * so the following run starts again from the top and the table converges on
+ * the current truth rather than drifting.
+ *
+ * A FULL RE-WALK RATHER THAN A DELTA, deliberately. There is no "leads changed
+ * since" filter, and a lead that MOVES campaign has to move here too — a delta
+ * keyed on new leads would leave it in both places, which is precisely the kind
+ * of membership error that makes a Leads tab untrustworthy.
+ */
+const LEAD_PAGES_PER_RUN = 120;
+
+export const syncInstantlyLeads: JobFn = async ({ cursorText }): Promise<JobResult> => {
+  const client = createInstantlyClient();
+  const teamId = TEAM_ID();
+
+  const rows: Record<string, unknown>[] = [];
+  let after = cursorText ?? undefined;
+  let calls = 0;
+  let finished = false;
+
+  for (let page = 0; page < LEAD_PAGES_PER_RUN; page++) {
+    const { items, next } = await client.listLeadsPage({ limit: 100, startingAfter: after });
+    calls++;
+
+    for (const l of items) {
+      rows.push({
+        id: l.id,
+        team_id: teamId,
+        campaign_id: (l.campaign as string) ?? null,
+        email: (l.email as string) ?? null,
+        first_name: (l.first_name as string) ?? null,
+        last_name: (l.last_name as string) ?? null,
+        company_name: (l.company_name as string) ?? null,
+        company_domain: (l.company_domain as string) ?? null,
+        status: l.status ?? null,
+        esp_code: l.esp_code ?? null,
+        email_reply_count: Number(l.email_reply_count ?? 0),
+        email_open_count: Number(l.email_open_count ?? 0),
+        email_click_count: Number(l.email_click_count ?? 0),
+        last_contact_at: (l.timestamp_last_contact as string) ?? null,
+        eb_created_at: (l.timestamp_created as string) ?? null,
+        synced_at: new Date().toISOString(),
+      });
+    }
+
+    after = next;
+    if (!next || !items.length) {
+      finished = true;
+      break;
+    }
+  }
+
+  if (rows.length) await chunkUpsert("instantly_leads", rows, "id");
+
+  /*
+   * The cursor moves only AFTER the rows land, and is cleared at the end of the
+   * walk so the next run restarts. Advancing it first would skip a page
+   * permanently on a failed upsert.
+   */
+  await setCursorText("sync-instantly-leads", teamId, finished ? null : (after ?? null));
+
+  return {
+    rowsWritten: rows.length,
+    apiCalls: calls,
+    detail: {
+      pages: calls,
+      leads: rows.length,
+      resumedFrom: cursorText ? "cursor" : "start",
+      status: finished ? "walk complete" : "more pages next run",
     },
   };
 };

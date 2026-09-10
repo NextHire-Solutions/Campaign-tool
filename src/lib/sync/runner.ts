@@ -58,6 +58,11 @@ export type JobFn = (ctx: {
   teamId: number;
   /** Persisted cursor from the last successful run, if the job uses one. */
   cursorDate: string | null;
+  /**
+   * An opaque string cursor, for endpoints whose pagination token is neither a
+   * date nor an id — Instantly's `starting_after` is uuid-shaped.
+   */
+  cursorText: string | null;
   watermark: string | null;
 }) => Promise<JobResult>;
 
@@ -81,7 +86,7 @@ export async function runJob(
 
   const { data: state } = await sb
     .from("sync_state")
-    .select("running_since, consecutive_failures, cursor_date, watermark_at")
+    .select("running_since, consecutive_failures, cursor_date, cursor_text, watermark_at")
     .eq("job_name", jobName)
     .eq("team_id", teamId)
     .maybeSingle();
@@ -143,6 +148,7 @@ export async function runJob(
     const result = await fn({
       teamId,
       cursorDate: state?.cursor_date ?? null,
+      cursorText: state?.cursor_text ?? null,
       watermark: state?.watermark_at ?? null,
     });
     const durationMs = Date.now() - startedAt;
@@ -194,6 +200,19 @@ export async function runJob(
       error: message,
     };
   }
+}
+
+/** Records an opaque page cursor, so the next run resumes mid-walk. */
+export async function setCursorText(
+  jobName: string,
+  teamId: number,
+  cursorText: string | null,
+): Promise<void> {
+  await getSupabase()
+    .from("sync_state")
+    .update({ cursor_text: cursorText })
+    .eq("job_name", jobName)
+    .eq("team_id", teamId);
 }
 
 /** Records the cursor a date-driven job reached, so the next run resumes there. */
