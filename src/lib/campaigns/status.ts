@@ -54,6 +54,33 @@ export function isCampaignAction(value: string): value is CampaignAction {
  * "start emailing everyone still attached to it". Probed and documented in
  * docs/eb-api-findings.md.
  */
+/**
+ * Which actions exist on each platform, as opposed to which apply to a status.
+ *
+ * These are DIFFERENT QUESTIONS and conflating them offers buttons that cannot
+ * work. `canApply` asks "is this campaign in a state where the action makes
+ * sense"; this asks "does the platform have the action at all".
+ *
+ * Instantly has no archive. Our `archived_at` column is a local concept — it
+ * records that a campaign vanished from the API, not something we can ask
+ * Instantly to do — so offering Archive there would write a local flag while
+ * changing nothing upstream, which is exactly the "shows the change as saved
+ * when it wasn't" that spec §9.5 forbids.
+ */
+export function platformSupports(action: CampaignAction, platform: string): boolean {
+  if (platform !== "instantly") return true;
+  switch (action) {
+    case "pause":
+    case "duplicate":
+      return true;
+    case "resume":
+      // /campaigns/{id}/activate — verified on an empty campaign, 0 → 1.
+      return true;
+    case "archive":
+      return false;
+  }
+}
+
 export function canApply(action: CampaignAction, status: string): boolean {
   switch (action) {
     case "pause":

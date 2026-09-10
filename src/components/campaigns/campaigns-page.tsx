@@ -45,6 +45,7 @@ import {
   STATUS_TONE,
   canApply,
   isKnownStatus,
+  platformSupports,
   whyNot,
   type CampaignAction,
 } from "@/lib/campaigns/status.ts";
@@ -118,7 +119,8 @@ interface ListResponse {
 }
 
 interface ActionResult {
-  campaignId: number;
+  campaignId: string;
+  platform: "emailbison" | "instantly";
   name: string;
   ok: boolean;
   status?: string;
@@ -252,10 +254,21 @@ export function CampaignsPage() {
 
   const apply = useMutation({
     mutationFn: async ({ action, ids }: { action: CampaignAction; ids: string[] }) => {
+      /*
+       * PLATFORM TRAVELS WITH EVERY ID. The two id spaces are separate — a
+       * bigint and a uuid — so the server cannot infer which campaign a bare
+       * id means, and sending only ids would have silently addressed the
+       * EmailBison namespace for all of them.
+       */
+      const byId = new Map(items.map((c) => [c.id, c.platform]));
+      const targets = ids.map((id) => ({
+        platform: byId.get(id) ?? ("emailbison" as const),
+        id,
+      }));
       const response = await fetch("/api/campaigns/actions", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ action, campaignIds: ids, confirm: true }),
+        body: JSON.stringify({ action, targets, confirm: true }),
       });
       const body = await response.json();
       if (!response.ok && response.status !== 207) {
@@ -283,21 +296,26 @@ export function CampaignsPage() {
    */
   const emailBisonSelection = selectedCampaigns.filter((c) => c.platform === "emailbison");
   const selectionHasInstantly = selectedCampaigns.some((c) => c.platform === "instantly");
+  /*
+   * Only the two dialogs below are EmailBison-only now; the status actions
+   * dispatch by platform. Named separately so the note beside the count refers
+   * to the right thing.
+   */
+  const dialogsNeedEmailBison = selectionHasInstantly && emailBisonSelection.length > 0;
 
   /** Only the campaigns an action can actually apply to — the rest are named, not sent. */
   /*
-   * ELIGIBILITY IS PLATFORM-AWARE. `canApply` answers a question about a
-   * campaign's STATUS; whether the action exists on the campaign's platform is
-   * a separate question, and conflating them would offer "Pause 25" over a
-   * selection where 12 of those calls cannot be made at all.
+   * ELIGIBILITY ASKS TWO QUESTIONS, and they are genuinely different: does the
+   * PLATFORM have this action, and does the campaign's STATUS allow it. The
+   * count shown on a button is the answer to both, so "Pause 12" never
+   * includes a campaign whose pause call cannot be made.
    *
-   * Pause, resume, archive and duplicate all run through EmailBison's API
-   * today. The Instantly client can do the equivalent — that is verified — but
-   * the action route has not been taught to dispatch by platform yet, so the
-   * honest count here is the EmailBison one.
+   * Archive is the asymmetric one: Instantly has no equivalent, and our
+   * archived_at column is a local record that a campaign vanished rather than
+   * something we can ask Instantly to do.
    */
   const eligible = (action: CampaignAction, list: Campaign[]) =>
-    list.filter((c) => c.platform === "emailbison" && canApply(action, c.status));
+    list.filter((c) => platformSupports(action, c.platform) && canApply(action, c.status));
 
   function toggleAll() {
     setSelected(selected.size === items.length ? new Set() : new Set(items.map((c) => c.id)));
@@ -513,10 +531,10 @@ export function CampaignsPage() {
       {selected.size > 0 ? (
         <div className="flex shrink-0 items-center gap-2 border-b bg-accent/40 px-6 py-2">
           <span className="tnum text-xs font-medium">{selected.size} selected</span>
-          {selectionHasInstantly ? (
+          {dialogsNeedEmailBison ? (
             <span className="text-[11px] text-muted-foreground">
-              · actions apply to the {emailBisonSelection.length} EmailBison campaign
-              {emailBisonSelection.length === 1 ? "" : "s"}
+              · Inboxes and Re-campaign apply to the {emailBisonSelection.length} EmailBison
+              campaign{emailBisonSelection.length === 1 ? "" : "s"}
             </span>
           ) : null}
           {(["pause", "resume", "archive", "duplicate"] as CampaignAction[]).map((action) => {

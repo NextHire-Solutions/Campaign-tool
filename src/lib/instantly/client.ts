@@ -369,6 +369,23 @@ export class InstantlyClient {
     });
   }
 
+  /**
+   * Starts a campaign sending. THE DANGEROUS ONE.
+   *
+   * Deliberately not added until there was a caller that guards it: the bulk
+   * action route refuses `resume` without `confirm: true`, and the only client
+   * that sets that flag is a dialog naming every campaign and its lead count.
+   *
+   * Verified on a campaign with 0 leads and 0 inboxes — which cannot send to
+   * anyone — where it moved status 0 → 1, and pause moved it back to 2. That is
+   * the only responsible way to learn this contract: guessing about an endpoint
+   * that starts emailing thousands of people is not an option, and neither is
+   * shipping it unverified.
+   */
+  async activateCampaign(id: string): Promise<unknown> {
+    return this.request(`/campaigns/${id}/activate`, { method: "POST", body: {} });
+  }
+
   async pauseCampaign(id: string): Promise<unknown> {
     return this.request(`/campaigns/${id}/pause`, { method: "POST", body: {} });
   }

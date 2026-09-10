@@ -24,9 +24,23 @@ export const maxDuration = 300;
 
 const TEAM_ID = () => Number(process.env.EMAILBISON_TEAM_ID || 2);
 
+const Target = z.object({
+  platform: z.enum(["emailbison", "instantly"]),
+  id: z.string().min(1),
+});
+
 const Body = z.object({
   action: z.enum(CAMPAIGN_ACTIONS),
-  campaignIds: z.array(z.number().int().positive()).min(1).max(500),
+  /*
+   * A campaign is named by PLATFORM AND ID. The two id spaces are separate —
+   * a bigint and a uuid — so an id alone cannot say which campaign is meant,
+   * and a numeric-only field could not express an Instantly campaign at all.
+   *
+   * `campaignIds` is still accepted so an older client keeps working; it means
+   * EmailBison, which is what it has always meant.
+   */
+  targets: z.array(Target).min(1).max(500).optional(),
+  campaignIds: z.array(z.number().int().positive()).min(1).max(500).optional(),
   /*
    * Required for anything that can start sending. The client sends it only from
    * a confirmation dialog that names the campaigns and their lead counts, so a
@@ -56,7 +70,20 @@ export async function POST(request: NextRequest) {
     );
   }
 
-  const { action, campaignIds, confirm } = parsed.data;
+  const { action, confirm } = parsed.data;
+  const targets =
+    parsed.data.targets ??
+    (parsed.data.campaignIds ?? []).map((id) => ({
+      platform: "emailbison" as const,
+      id: String(id),
+    }));
+
+  if (!targets.length) {
+    return NextResponse.json(
+      { error: "No campaigns given. Send `targets: [{platform, id}]`." },
+      { status: 400 },
+    );
+  }
 
   if (action === "resume" && !confirm) {
     return NextResponse.json(
@@ -70,7 +97,7 @@ export async function POST(request: NextRequest) {
 
   const { batchId, results } = await applyCampaignAction(
     action,
-    campaignIds,
+    targets,
     session.email,
     TEAM_ID(),
   );

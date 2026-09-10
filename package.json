@@ -12,7 +12,8 @@
     "probe": "node --env-file=.env.local scripts/probe-eb.mjs",
     "smoke": "node scripts/smoke.mjs",
     "check:filters": "node scripts/check-filters.mjs",
-    "verify:instantly": "node scripts/verify-instantly-writes.mjs"
+    "verify:instantly": "node scripts/verify-instantly-writes.mjs",
+    "verify:actions": "node scripts/verify-instantly-actions.mjs"
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.58.0",
