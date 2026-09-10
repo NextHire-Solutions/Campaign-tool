@@ -343,6 +343,28 @@ console.log("");
   if (!target) {
     fail("an Instantly campaign has leads", "none of the first 30 had any");
   } else {
+    /*
+     * NAVIGATE FROM THE LIST, not straight to the URL.
+     *
+     * This is the check that was missing. The detail page was verified by
+     * visiting /campaigns/{uuid} directly and passed — while the list rendered
+     * Instantly rows as plain text, because an earlier guard made them
+     * non-links when the page could not render them yet. 318 campaigns were
+     * visible and unreachable, and every test passed: they all tested the
+     * destination, never the path to it.
+     */
+    await goto("/campaigns?platforms=instantly");
+    const href = await evaluate(`(() => {
+      const a = Array.from(document.querySelectorAll('a[href^="/campaigns/"]'))
+        .find(x => /\\/campaigns\\/[0-9a-f-]{36}$/.test(x.getAttribute('href') || ''));
+      return a ? a.getAttribute('href') : null;
+    })()`);
+    if (!href) {
+      fail("Instantly rows link to their campaign", "no uuid link in the list — the rows are not clickable");
+    } else {
+      pass("Instantly rows link to their campaign", href);
+    }
+
     await goto(`/campaigns/${target.c.id}`);
     /*
      * textContent, not innerText. innerText depends on layout and came back

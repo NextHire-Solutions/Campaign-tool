@@ -660,24 +660,21 @@ export function CampaignsPage() {
                   </td>
                   <td className="max-w-[380px] px-2 py-2">
                     {/*
-                      The detail page reads EmailBison's lead tables, so an
-                      Instantly row is deliberately NOT a link. A link that
-                      leads to an empty page reads as broken data rather than
-                      an absent feature.
+                      BOTH PLATFORMS LINK. This was EmailBison-only while the
+                      detail page could not render an Instantly campaign —
+                      a link to an empty page reads as broken data rather than
+                      an absent feature. The page works for both now, and the
+                      guard outlived its reason: it left 318 campaigns visible
+                      but unreachable, which is a worse failure than the one it
+                      was avoiding, and an invisible one from the code's side.
                     */}
-                    {campaign.platform === "emailbison" ? (
-                      <Link
-                        href={`/campaigns/${campaign.id}`}
-                        className="truncate hover:underline"
-                        title={campaign.name}
-                      >
-                        {campaign.name}
-                      </Link>
-                    ) : (
-                      <span className="truncate" title={campaign.name}>
-                        {campaign.name}
-                      </span>
-                    )}
+                    <Link
+                      href={`/campaigns/${campaign.id}`}
+                      className="truncate hover:underline"
+                      title={campaign.name}
+                    >
+                      {campaign.name}
+                    </Link>
                     <PlatformBadge platform={campaign.platform} />
                   </td>
                   <td className="px-2 py-2 text-xs text-muted-foreground">
