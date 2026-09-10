@@ -263,12 +263,48 @@ export async function GET(request: NextRequest) {
     }),
   ]);
 
-  const failed =
-    totals.error ?? rows.error ?? problems.error ?? bands.error ?? providers.error ??
-    disconnected.error ?? vendors.error ?? recipients.error;
-  if (failed) {
-    return NextResponse.json({ error: failed.message }, { status: 500 });
+  /*
+   * ONE FAILING CARD MUST NOT BLANK THE ESTATE.
+   *
+   * This used to fail the whole response if ANY of the eight parallel calls
+   * errored. When `analytics_bounce_recipients` began exceeding the statement
+   * timeout (fixed in 081), the entire EmailBison estate — 1,796 inboxes, 503
+   * domains, every bounce band — rendered as "0 domains / Nothing to show. Run
+   * sync-senders if this is unexpected." The page was not merely degraded, it
+   * was actively misleading: the suggested remedy addressed a different
+   * problem, so the message pointed away from the cause.
+   *
+   * The eight calls answer eight independent questions. `recipients` failing
+   * says nothing about whether `totals` succeeded, so the ones that returned
+   * are still shown and the ones that did not are reported BY NAME in
+   * `degraded`. A card with no data is honest; a whole page pretending the
+   * estate is empty is not.
+   *
+   * The exception is `totals` and `rows`: they are the page itself rather than
+   * a card on it, and rendering a shell with neither would be the same empty
+   * screen by another route. Those still fail the request, loudly.
+   */
+  const essential = totals.error ?? rows.error;
+  if (essential) {
+    console.error("[api/infrastructure]", essential);
+    return NextResponse.json({ error: essential.message }, { status: 500 });
   }
+
+  const degraded = (
+    [
+      ["problems", problems.error],
+      ["bands", bands.error],
+      ["providers", providers.error],
+      ["disconnected", disconnected.error],
+      ["vendors", vendors.error],
+      ["recipients", recipients.error],
+    ] as const
+  )
+    .filter(([, error]) => error)
+    .map(([name, error]) => {
+      console.error(`[api/infrastructure] ${name}`, error);
+      return name;
+    });
 
   return NextResponse.json({
     estate,
@@ -287,5 +323,11 @@ export async function GET(request: NextRequest) {
     rcptGroup,
     rcptMinLeads,
     minSent,
+    /*
+     * Named so a missing card can be told apart from an empty one. Absent from
+     * a healthy response rather than an empty array, so `degraded?.length` is
+     * the whole check and a normal payload carries no extra noise.
+     */
+    ...(degraded.length ? { degraded } : {}),
   });
 }

@@ -111,6 +111,15 @@ interface Response {
   recipients: RecipientRow[];
   rcptGroup: "esp" | "domain";
   rcptMinLeads: number;
+  /**
+   * Cards whose query failed, by name. Absent when everything answered.
+   *
+   * An empty card and a broken one look identical, and this page has already
+   * shipped the worse version of that confusion once: a card that timed out
+   * blanked the whole estate under the message "Run sync-senders if this is
+   * unexpected", which described a different problem entirely.
+   */
+  degraded?: string[];
 }
 
 function Card({ className, children }: { className?: string; children: React.ReactNode }) {
@@ -280,6 +289,14 @@ export function InfrastructureView() {
             <Loader2 className="size-3.5 animate-spin text-muted-foreground" />
           ) : null}
         </header>
+
+        {data?.degraded?.length ? (
+          <p className="rounded-lg border border-amber-300/60 bg-amber-50 px-3 py-2 text-xs text-amber-900">
+            Some cards could not be loaded ({data.degraded.join(", ")}). Everything
+            else on this page is current — those sections are blank because their
+            query failed, not because the data is empty.
+          </p>
+        ) : null}
 
         {/* ---- Summary: the health of the estate, and its shape ---- */}
         <div className="grid items-start gap-5 xl:grid-cols-[1.35fr_1fr]">
