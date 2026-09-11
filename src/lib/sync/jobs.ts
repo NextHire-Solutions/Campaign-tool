@@ -1579,6 +1579,30 @@ export function makeCampaignLeadsJob(windowDays: number | null, pageBudget: numb
           .gte("stat_date", since)
           .gt("emails_sent", 0);
         recentlyActive = new Set((active ?? []).map((r) => r.campaign_id));
+
+        /*
+         * A SECOND, INDEPENDENT REASON TO INCLUDE A CAMPAIGN (090).
+         *
+         * The gate above decides activity from campaign_day_stats, which a
+         * DIFFERENT job writes on its own 3-hourly cadence — so a campaign that
+         * starts sending is invisible here until that job notices it first. Two
+         * 3-hourly jobs in sequence is a window of up to ~6 hours where a live
+         * campaign shows an empty Leads tab, and the skip is silent.
+         *
+         * That is exactly what happened to a campaign launched the same day it
+         * was created: 3,155 leads and 267 sends upstream, one lead on screen.
+         *
+         * "EmailBison says it has sent more than we hold" needs no other job to
+         * have run and is the literal definition of work outstanding. The gate
+         * keeps its value — it still spares ~85 pointless cursor opens a run —
+         * but it is no longer the only way in.
+         */
+        const { data: behind } = await sb.rpc("campaigns_with_unfetched_sends", {
+          p_team_id: teamId,
+        });
+        for (const row of (behind ?? []) as Array<{ campaign_id: number }>) {
+          recentlyActive.add(row.campaign_id);
+        }
       } else {
         console.warn(
           "[sync] campaign-leads: sync-day-stats is stale, so the quiet-campaign skip is disabled",
