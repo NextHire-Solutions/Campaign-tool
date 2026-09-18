@@ -10,10 +10,13 @@ import {
  * whole Instantly workspace as if it belonged to the selected campaign.
  */
 
-test("no platform filter means EmailBison, not both", () => {
+test("no platform filter means BOTH platforms", () => {
+  // It meant EmailBison only. A client sending entirely through Instantly then
+  // opened their dashboard to Sent 0 and an empty chart, with 12 live
+  // campaigns and 33,690 emails behind the filter.
   const scope = resolvePlatformScope({ platforms: [], emailbisonCampaignIds: [], instantlyCampaignIds: [] });
   assert.equal(scope.emailbison, true);
-  assert.equal(scope.instantly, false);
+  assert.equal(scope.instantly, true);
 });
 
 test("asking for both gets both", () => {
@@ -49,11 +52,14 @@ test("a campaign filter with both platforms keeps EmailBison and drops Instantly
   assert.deepEqual(coveredPlatforms(scope), ["emailbison"]);
 });
 
-test("a campaign filter alone is unaffected — Instantly was never asked for", () => {
+test("picking only EmailBison campaigns takes Instantly out of scope, and says so", () => {
+  // Now that the default is both, Instantly IS asked for here — and a
+  // selection of EmailBison campaign ids cannot name an Instantly campaign, so
+  // its honest contribution is nothing. The caller is told why.
   const scope = resolvePlatformScope({ platforms: [], emailbisonCampaignIds: [55], instantlyCampaignIds: [] });
   assert.equal(scope.emailbison, true);
   assert.equal(scope.instantly, false);
-  assert.equal(scope.instantlyExcludedBy, undefined);
+  assert.equal(scope.instantlyExcludedBy, "campaign-filter");
 });
 
 test("the exclusion is only reported when Instantly was actually requested", () => {

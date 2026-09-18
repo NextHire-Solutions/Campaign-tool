@@ -128,6 +128,41 @@ export async function PATCH(
     ),
   );
 
+  /*
+   * THE TWO SENDING LIMITS MUST TRAVEL TOGETHER.
+   *
+   * EmailBison validates `max_emails_per_day >= max_new_leads_per_day` across
+   * the REQUEST, not against the campaign as stored. Laravel's `gte:` rule
+   * compares one submitted field with another submitted field — so when only
+   * one of the pair is sent, the other is missing and the rule fails outright.
+   *
+   * Measured against a real draft campaign whose two limits are both 1000,
+   * by sending it its own values back:
+   *
+   *   { max_emails_per_day: 1000 }                        → 422
+   *   { max_new_leads_per_day: 1000 }                     → 422
+   *   { max_emails_per_day: 1000, max_new_leads_per_day: 1000 } → 200
+   *
+   * That is what someone hit changing the daily send limit to 2000 with new
+   * leads at 1000: a perfectly valid pair, refused, with an error naming a
+   * field they had not touched.
+   *
+   * So whenever either limit is in the patch, send both, filling the untouched
+   * one from the campaign as it stands. These are numbers, not the booleans the
+   * "only send what changed" rule above exists to protect, so nothing is
+   * clobbered by naming them.
+   */
+  const LIMIT_PAIR = ["max_emails_per_day", "max_new_leads_per_day"] as const;
+  if (LIMIT_PAIR.some((key) => key in changed)) {
+    for (const key of LIMIT_PAIR) {
+      if (key in changed) continue;
+      const current = (before as Record<string, unknown>)[key];
+      // If we do not hold the partner value there is nothing honest to send;
+      // EmailBison's own error is then the right thing for the user to see.
+      if (current != null) changed[key] = current;
+    }
+  }
+
   if (Object.keys(changed).length === 0) {
     return NextResponse.json({ ok: true, changed: {}, note: "No values differed" });
   }

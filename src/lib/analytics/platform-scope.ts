@@ -41,12 +41,12 @@ export interface PlatformScope {
 /**
  * Resolves the platforms in scope, honouring the campaign filter.
  *
- * An empty `platforms` means EmailBison only, NOT both, and that asymmetry is
- * deliberate rather than an oversight — Positive is decided by MasterInbox
- * labels keyed to EmailBison reply ids, so defaulting the headline band to both
- * would dash Positive, Positive Rate and Lead to Email for everyone who never
- * touches the filter. Volume, which has no Positive, defaults to both instead
- * and says so on screen.
+ * An empty `platforms` means BOTH. It used to mean EmailBison only, to keep
+ * Positive, Positive Rate and Lead to Email from dashing for anyone who never
+ * touched the filter — those three are decided by MasterInbox labels keyed to
+ * EmailBison reply ids and cannot cover Instantly. See the body for why that
+ * trade was reversed: it showed a screen of zeros to every client who sends
+ * through Instantly.
  */
 export function resolvePlatformScope(input: PlatformScopeInput): PlatformScope {
   const { platforms, emailbisonCampaignIds, instantlyCampaignIds } = input;
@@ -62,9 +62,27 @@ export function resolvePlatformScope(input: PlatformScopeInput): PlatformScope {
    * — an empty band, from a filter the user had just set. Naming a campaign is
    * a more specific request than leaving the platform blank, so it wins.
    */
-  let instantly =
-    platforms.includes("instantly") ||
-    (platforms.length === 0 && instantlyCampaignIds.length > 0);
+  /*
+   * AN EMPTY PLATFORM FILTER NOW MEANS BOTH.
+   *
+   * It meant EmailBison only, to protect three metrics that cannot cover
+   * Instantly: Positive, Positive Rate and Lead to Email are decided by
+   * MasterInbox labels keyed to EmailBison reply ids. Defaulting to both dashes
+   * all three for anyone who never touches the filter, which is why the
+   * asymmetry existed.
+   *
+   * It cost more than it protected. A client whose sending is entirely on
+   * Instantly opened their dashboard and saw Sent 0, Replies 1, every rate a
+   * dash and an empty chart, and concluded their campaigns were not connected.
+   * They were: 12 campaigns, 33,690 emails, invisible because of this default.
+   * Three dashed metrics are a gap someone can ask about. A screen of zeros
+   * reads as broken, and is worse for every client not on EmailBison.
+   *
+   * Changed on the client's instruction, for both dashboards. The three
+   * EmailBison-only metrics still say so on screen, which is what makes the
+   * dash legible rather than mysterious.
+   */
+  let instantly = platforms.length === 0 || platforms.includes("instantly");
 
   /*
    * A CAMPAIGN SELECTION NAMES SPECIFIC CAMPAIGNS, so a platform with none of
