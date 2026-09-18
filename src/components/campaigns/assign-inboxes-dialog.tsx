@@ -232,8 +232,10 @@ export function AssignInboxesDialog({
               ) : null}
               {platform === "instantly" && !summary ? (
                 <p className="rounded-lg border bg-muted/40 px-3 py-2 text-xs text-muted-foreground">
-                  Instantly replaces a campaign&rsquo;s whole sending list rather than
-                  attaching to it, so inboxes already assigned are read first and kept.
+                  On Instantly the pool itself is assigned, not a copy of its
+                  addresses — so inboxes added to this pool later will start
+                  sending for these campaigns on their own. Pools already on a
+                  campaign are read first and kept.
                 </p>
               ) : null}
               {summary ? (

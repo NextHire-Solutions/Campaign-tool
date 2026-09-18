@@ -81,59 +81,108 @@ function chunk<T>(items: T[], size: number): T[][] {
  * already attached is exactly the thing you want to be able to take off.
  */
 /**
- * The Instantly half.
+ * The Instantly half — assigned BY TAG, not by a list of addresses.
  *
- * THERE IS NO ATTACH OR REMOVE. A campaign's sending inboxes ARE its
- * `email_list` array, so every change is a READ-MODIFY-WRITE of the whole list.
- * Two things follow, and both are the opposite of the EmailBison path:
+ * WHY NOT `email_list`. Instantly has two independent ways to give a campaign
+ * its inboxes: `email_list`, a frozen array of addresses, and `email_tag_list`,
+ * the pool assignment. Measured on this workspace, every campaign with real
+ * send volume uses the second and has the first empty — Howe Realty, Camelot,
+ * C21 all carry the "Nicole Pool" tag and no explicit addresses.
  *
- *  - The current list must be read first. Writing only the pool would DETACH
- *    every inbox already assigned — silently, with a 200 — which is the worst
- *    kind of destructive: it looks like it worked.
- *  - The campaigns cannot be written concurrently with anything else touching
- *    the same campaign, because a replace has no merge semantics. They are done
- *    serially for the same reason the EmailBison side is.
+ * That matters because a tag stays LIVE. Assign "Nicole Pool" and the campaign
+ * sends from whatever that pool holds today; add 20 inboxes to it next month
+ * and they apply on their own. Expanding the pool into 428 addresses instead
+ * pins a copy that is wrong the first time the pool changes, and nothing would
+ * say so.
+ *
+ * So this writes one tag id rather than 428 addresses. The read-modify-write is
+ * still required — a campaign can carry SEVERAL pools (Howe Realty campaigns
+ * carry two) and writing only the tag being assigned would detach the others.
+ * Verified on a throwaway campaign: `email_list` and `email_tag_list` are
+ * independent, so this cannot disturb a campaign deliberately pinned to
+ * specific addresses.
+ *
+ * Serial for the same reason as the EmailBison side: a whole-array replace has
+ * no merge semantics, so two concurrent writes to one campaign lose one of them.
  */
 async function assignInstantly(
   campaignIds: string[],
-  emails: string[],
+  tag: string,
+  poolSize: number,
   action: "attach" | "remove",
   nameById: Map<string, string>,
 ): Promise<InboxAssignmentResult[]> {
   const client = createInstantlyClient();
   const results: InboxAssignmentResult[] = [];
-  const wanted = new Set(emails.map((e) => e.toLowerCase()));
+
+  /*
+   * Resolve the pool NAME to the id `email_tag_list` holds, once for the batch.
+   *
+   * A tag that exists on EmailBison but not on Instantly is a normal thing to
+   * pick — the two estates have different pools — so this is reported per
+   * campaign rather than thrown. Silently writing nothing would be the bad
+   * outcome: the dialog would say it assigned a pool that was never applied.
+   */
+  let tagId: string | undefined;
+  try {
+    tagId = (await client.getCustomTagIds()).get(tag.trim().toLowerCase());
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    return campaignIds.map((campaignId) => ({
+      campaignId,
+      platform: "instantly" as const,
+      name: nameById.get(campaignId) ?? campaignId,
+      ok: false,
+      applied: 0,
+      error: `Could not read Instantly's tags: ${message}`,
+    }));
+  }
+
+  if (!tagId) {
+    return campaignIds.map((campaignId) => ({
+      campaignId,
+      platform: "instantly" as const,
+      name: nameById.get(campaignId) ?? campaignId,
+      ok: false,
+      applied: 0,
+      error: `No Instantly inbox tag named "${tag}". The pools differ per platform.`,
+    }));
+  }
 
   for (const campaignId of campaignIds) {
     const name = nameById.get(campaignId) ?? campaignId;
     try {
-      const current = await client.getCampaignInboxes(campaignId);
-      const have = new Set(current.map((e) => e.toLowerCase()));
+      const current = await client.getCampaignInboxTags(campaignId);
+      const had = current.includes(tagId);
 
       const next =
         action === "attach"
-          ? [...new Set([...current, ...emails])]
-          : current.filter((e) => !wanted.has(e.toLowerCase()));
+          ? had
+            ? current
+            : [...current, tagId]
+          : current.filter((id) => id !== tagId);
+
+      const changed = action === "attach" ? !had : had;
+      if (changed) await client.setCampaignInboxTags(campaignId, next);
 
       /*
-       * `applied` counts what CHANGED, not the size of the pool. Re-assigning a
-       * pool that is already attached is a normal thing to do, and reporting
-       * "428 assigned" when nothing moved would make the number meaningless.
+       * `applied` is the POOL SIZE, not 1.
+       *
+       * The number is read by a person asking "how many inboxes now send for
+       * this campaign", and the honest answer for a tag assignment is the size
+       * of the pool it points at. Reporting 1 — the number of fields written —
+       * would be true about the API call and useless about the outcome.
+       *
+       * Zero when nothing changed, so re-running a batch to fix one campaign
+       * does not claim to have reassigned the others.
        */
-      const applied =
-        action === "attach"
-          ? emails.filter((e) => !have.has(e.toLowerCase())).length
-          : current.length - next.length;
-
-      if (applied > 0) await client.setCampaignInboxes(campaignId, next);
-
       results.push({
         campaignId,
         platform: "instantly",
         name,
         ok: true,
-        applied,
-        alreadyAttached: action === "attach" ? emails.length - applied : undefined,
+        applied: changed ? poolSize : 0,
+        alreadyAttached: action === "attach" && had ? poolSize : undefined,
       });
     } catch (error) {
       results.push({
@@ -194,16 +243,44 @@ export async function assignInboxesByTag(
   const inboxIds = (usableIds ?? []) as number[];
   const allTagged = (allIds ?? []) as number[];
 
+  /*
+   * THE INSTANTLY POOL IS COUNTED SEPARATELY, AND EARLY.
+   *
+   * The two estates have different pools: "Howe Realty" is 48 Instantly
+   * accounts and no EmailBison senders at all. Counting only the EmailBison
+   * side and returning when it is empty made an Instantly-only tag a silent
+   * no-op — the dialog reported success having assigned nothing, because the
+   * function returned before it ever reached the Instantly half.
+   *
+   * So the pool is resolved per platform and the work is skipped per platform,
+   * never for the batch on the strength of one side's count.
+   */
+  let instantlyPool = 0;
+  if (instantlyIds.length) {
+    const { data: emails, error: instError } = await sb.rpc(
+      "instantly_account_emails_by_tag",
+      { p_team_id: teamId, p_tag: tag },
+    );
+    if (instError) throw new Error(`inbox lookup: ${instError.message}`);
+    instantlyPool = ((emails ?? []) as string[]).length;
+  }
+
   const summary: AssignmentSummary = {
     batchId,
     tag,
     action,
-    inboxes: inboxIds.length,
+    /*
+     * The pool actually in play. The dialog assigns one platform at a time, so
+     * in practice this is that platform's count; a mixed batch can only come
+     * from the API, and there the sum is the truthful total.
+     */
+    inboxes: (campaignIds.length ? inboxIds.length : 0) + instantlyPool,
     skippedDisconnected: allTagged.length - inboxIds.length,
     results: [],
   };
 
-  if (!inboxIds.length) return summary;
+  // Nothing to assign on EITHER side — only then is there no work.
+  if (!inboxIds.length && !instantlyPool) return summary;
 
   /*
    * Names from the unified view, so one lookup covers both platforms and a
@@ -226,7 +303,14 @@ export async function assignInboxesByTag(
    * exchange for several half-assigned campaigns when the API starts refusing.
    * The same reasoning as bulk-deploy.
    */
-  for (const campaignId of campaignIds) {
+  /*
+   * Skipped entirely when the tag has no EmailBison senders — an Instantly-only
+   * pool paired with EmailBison campaigns. Looping anyway would chunk an empty
+   * array, write nothing, and report every campaign as a success with 0
+   * applied, which reads as "done" for work that never happened.
+   */
+  const ebCampaigns = inboxIds.length ? campaignIds : [];
+  for (const campaignId of ebCampaigns) {
     const name = nameById.get(String(campaignId)) ?? `#${campaignId}`;
     const result: InboxAssignmentResult = {
       campaignId: String(campaignId),
@@ -236,7 +320,59 @@ export async function assignInboxesByTag(
       applied: 0,
     };
 
-    for (const part of chunk(inboxIds, CHUNK)) {
+    /*
+     * A REMOVE MAY ONLY SEND IDS THE CAMPAIGN ACTUALLY HAS.
+     *
+     * EmailBison rejects a remove chunk OUTRIGHT if any id in it is not on the
+     * campaign — "The selected sender_email_ids.101 is invalid" — and the whole
+     * chunk then removes nothing. Measured: removing a 534-inbox pool from a
+     * campaign carrying 531 of them (the 3 disconnected were never attached,
+     * because an attach excludes them) took the second chunk down and left 282
+     * inboxes stranded, reported as an error.
+     *
+     * The mismatch is not exotic, it is the NORMAL case: attach uses the
+     * connected-only pool and remove used every tagged inbox, so any pool with
+     * a single dead inbox in it could not be removed cleanly.
+     *
+     * So the pool is intersected with what the campaign holds. One paginated
+     * read per campaign, on removes only — attach needs no such read because
+     * "already attached" is a tolerated outcome, not a refusal.
+     */
+    let ids = inboxIds;
+    if (action === "remove") {
+      try {
+        const attached = await eb.getCampaignSenderEmails(campaignId);
+        const have = new Set(attached.map((s) => s.id));
+        ids = inboxIds.filter((senderId) => have.has(senderId));
+      } catch (caught) {
+        result.ok = false;
+        result.error = `Could not read the campaign's current inboxes: ${describeEmailBisonError(caught)}`;
+        summary.results.push(result);
+        auditRows.push({
+          team_id: teamId,
+          campaign_id: campaignId,
+          platform: "emailbison",
+          campaign_ref: String(campaignId),
+          campaign_name: name,
+          action: "remove-inboxes",
+          actor,
+          status: "error",
+          error: result.error,
+          before_state: { tag, inboxes: inboxIds.length },
+          after_state: null,
+          batch_id: batchId,
+        });
+        continue;
+      }
+      // Nothing from this pool is on this campaign: the requested end state
+      // already holds, so it is a success with nothing applied.
+      if (!ids.length) {
+        summary.results.push(result);
+        continue;
+      }
+    }
+
+    for (const part of chunk(ids, CHUNK)) {
       try {
         if (action === "attach") await eb.attachSenderEmails(campaignId, part);
         else await eb.removeSenderEmails(campaignId, part);
@@ -282,12 +418,20 @@ export async function assignInboxesByTag(
    * the whole operation is already serial per campaign by design.
    */
   if (instantlyIds.length) {
-    const { data: emails } = await sb.rpc("instantly_account_emails_by_tag", {
-      p_team_id: teamId,
-      p_tag: tag,
-    });
-    const pool = (emails ?? []) as string[];
-    const instResults = await assignInstantly(instantlyIds, pool, action, nameById);
+    /*
+     * `instantlyPool` was counted above, before the early return, because that
+     * count is what decides whether there is Instantly work to do at all. It is
+     * passed rather than re-read: the pool is no longer SENT — the assignment
+     * is the tag itself — and the size exists only so a result row can say how
+     * many inboxes a campaign gained instead of "1 tag written".
+     */
+    const instResults = await assignInstantly(
+      instantlyIds,
+      tag,
+      instantlyPool,
+      action,
+      nameById,
+    );
     summary.results.push(...instResults);
 
     for (const r of instResults) {
@@ -302,7 +446,9 @@ export async function assignInboxesByTag(
         actor,
         status: r.ok ? "ok" : "error",
         error: r.error ?? null,
-        before_state: { tag, inboxes: pool.length },
+        // `assigned_by: "tag"` so a future reader can tell these rows apart
+        // from the earlier ones written while Instantly used an explicit list.
+        before_state: { tag, inboxes: instantlyPool, assigned_by: "tag" },
         after_state: r.ok ? { applied: r.applied } : null,
         batch_id: batchId,
       });

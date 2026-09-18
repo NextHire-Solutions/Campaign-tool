@@ -416,6 +416,65 @@ export class InstantlyClient {
     return Array.isArray(list) ? (list as string[]) : [];
   }
 
+  /*
+   * ---------------------------------------------------------------------------
+   * THE TAG ASSIGNMENT, WHICH IS HOW THIS ESTATE ACTUALLY ASSIGNS INBOXES
+   *
+   * `email_tag_list` is Instantly's own pool assignment and it is LIVE: a
+   * campaign carrying the "Nicole Pool" tag sends from whatever is in that pool
+   * today, so an inbox added next month applies without touching the campaign.
+   * `email_list` is the opposite — a frozen snapshot of addresses.
+   *
+   * Measured on this workspace: every campaign with real send volume assigns
+   * through `email_tag_list` and has `email_list` empty. Writing the pool out as
+   * 428 explicit addresses would pin a copy that drifts the moment the pool
+   * changes, which is why the assignment feature writes tags instead.
+   *
+   * Verified on a throwaway campaign: the two fields are INDEPENDENT. Writing
+   * one does not clear the other, so switching to tags cannot disturb a campaign
+   * that was deliberately pinned to specific addresses.
+   */
+
+  /**
+   * The workspace's inbox tags, as lowercased label → id.
+   *
+   * `email_tag_list` holds ids, but every other part of this feature — the
+   * dialog, the audit log, `instantly_accounts.tags` — speaks in names. This is
+   * the one place the two meet, so the lookup lives here rather than being
+   * re-derived by each caller.
+   */
+  async getCustomTagIds(): Promise<Map<string, string>> {
+    const page = await this.request<{
+      items?: Array<{ id: string; label?: string; name?: string }>;
+    }>("/custom-tags?limit=100");
+    const idByLabel = new Map<string, string>();
+    for (const t of page?.items ?? []) {
+      const label = (t.label ?? t.name ?? "").trim();
+      if (label) idByLabel.set(label.toLowerCase(), t.id);
+    }
+    return idByLabel;
+  }
+
+  async getCampaignInboxTags(id: string): Promise<string[]> {
+    const campaign = await this.getCampaign(id);
+    const list = campaign?.email_tag_list;
+    return Array.isArray(list) ? (list as string[]) : [];
+  }
+
+  /**
+   * Whole-array replace, like `setCampaignInboxes` — callers must read first.
+   *
+   * A campaign can carry several pools (measured: Howe Realty campaigns carry
+   * both "Howe Realty" and "Nicole Pool"), so writing only the tag being
+   * assigned would silently detach the others.
+   */
+  async setCampaignInboxTags(id: string, tagIds: string[]): Promise<unknown> {
+    return this.request(`/campaigns/${id}`, {
+      method: "PATCH",
+      body: { email_tag_list: tagIds },
+    });
+  }
+
   /** Leads currently in a campaign. */
   async listCampaignLeads(
     campaignId: string,
