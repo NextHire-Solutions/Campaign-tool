@@ -3,9 +3,10 @@
 import { useState } from "react";
 import Link from "next/link";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { ArrowLeft, Loader2, Pause, Play } from "lucide-react";
+import { ArrowLeft, Inbox, Loader2, Pause, Play } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { AssignInboxesDialog } from "@/components/campaigns/assign-inboxes-dialog";
 import { CopySequenceDialog } from "@/components/campaigns/copy-sequence-dialog";
 import { PushSequenceDialog } from "@/components/campaigns/push-sequence-dialog";
 import { ReCampaignDialog } from "@/components/campaigns/re-campaign-dialog";
@@ -20,6 +21,7 @@ import { CopyTagsPanel } from "@/components/campaigns/copy-tags-panel";
 import { CampaignLeads } from "@/components/campaigns/campaign-leads";
 import { OfferPicker } from "@/components/campaigns/offer-picker";
 import { DASH, fullNumber, percent } from "@/lib/analytics/format.ts";
+import { platformOfId } from "@/lib/campaigns/campaign-id.ts";
 import { STATUS_TONE, canApply, isKnownStatus } from "@/lib/campaigns/status.ts";
 import { cn } from "@/lib/utils";
 
@@ -115,6 +117,7 @@ type Tab = (typeof TABS)[number];
 export function CampaignDetail({ id }: { id: string }) {
   const queryClient = useQueryClient();
   const [tab, setTab] = useState<Tab>("Overview");
+  const [assigningInboxes, setAssigningInboxes] = useState(false);
   /*
    * The tab list depends on the platform, and the SELECTED tab is corrected
    * during render rather than in an effect — the React Compiler lint forbids
@@ -184,6 +187,13 @@ export function CampaignDetail({ id }: { id: string }) {
    * setState in an effect, and deriving it here means the page can never paint
    * a tab this campaign does not have.
    */
+  /*
+   * The response carries `platform` only on the Instantly branch — EmailBison
+   * responses predate the field — so reading it directly makes every EmailBison
+   * campaign look platform-less, and anything gated on it silently disappears
+   * there. The id itself is unambiguous (bigint vs uuid), so it is the fallback.
+   */
+  const platform = data.platform ?? platformOfId(id);
   const isInstantly = data.platform === "instantly";
   const visibleTabs = TABS.filter((t) => !isInstantly || INSTANTLY_TABS.has(t));
   const activeTab: Tab = visibleTabs.includes(tab) ? tab : "Overview";
@@ -240,7 +250,29 @@ export function CampaignDetail({ id }: { id: string }) {
             </p>
           </div>
 
-          {primary ? (
+          {/*
+            Which mailboxes send for this campaign — a different kind of change
+            from Pause/Resume, which move it through its lifecycle. Secondary
+            styling on purpose: the lifecycle action stays the primary one, and
+            this sits beside it rather than competing with it.
+
+            Any campaign can be given inboxes, so there is no eligibility rule;
+            it is gated only on knowing the platform, because the two have
+            different pools and the dialog cannot offer a list without one.
+          */}
+          <div className="flex shrink-0 items-center gap-2">
+            {platform ? (
+              <Button
+                size="sm"
+                variant="outline"
+                onClick={() => setAssigningInboxes(true)}
+                className="gap-1.5"
+              >
+                <Inbox className="size-3.5" />
+                Inboxes
+              </Button>
+            ) : null}
+            {primary ? (
             <Button
               size="sm"
               variant={primary === "resume" ? "default" : "outline"}
@@ -269,8 +301,18 @@ export function CampaignDetail({ id }: { id: string }) {
               )}
               {primary === "pause" ? "Pause" : "Resume"}
             </Button>
-          ) : null}
+            ) : null}
+          </div>
         </div>
+
+        {platform ? (
+          <AssignInboxesDialog
+            targets={[{ platform, id: String(campaign.id) }]}
+            open={assigningInboxes}
+            onOpenChange={setAssigningInboxes}
+            onDone={() => void queryClient.invalidateQueries({ queryKey: ["campaign", id] })}
+          />
+        ) : null}
 
         {act.error ? (
           <p className="mt-2 rounded-md border border-red-300/60 bg-red-50 p-2 text-xs text-red-800">
