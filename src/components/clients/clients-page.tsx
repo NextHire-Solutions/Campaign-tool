@@ -34,7 +34,7 @@ interface Client {
   slug: string;
   aliases: string[];
   matchMode: "contains" | "prefix" | "exact";
-  status: "active" | "paused" | "churned" | "prospect";
+  status: "onboarding" | "active" | "paused" | "churned";
   campaignCount: number;
   manualCount: number;
 }
@@ -46,11 +46,16 @@ interface Client {
  * answers it wrongly. So the list is the live roster by default and the rest
  * is one click away.
  */
+/*
+ * The spec asks for one visual language across every tool: paused orange,
+ * churned red. Those two are fixed by it; onboarding and active are ours to
+ * choose and are kept distinct from both.
+ */
 const STATUS_STYLE: Record<Client["status"], string> = {
+  onboarding: "bg-sky-50 text-sky-700 ring-sky-600/20",
   active: "bg-emerald-50 text-emerald-700 ring-emerald-600/20",
   paused: "bg-amber-50 text-amber-700 ring-amber-600/20",
-  churned: "bg-muted text-muted-foreground ring-border",
-  prospect: "bg-sky-50 text-sky-700 ring-sky-600/20",
+  churned: "bg-red-50 text-red-700 ring-red-600/20",
 };
 
 interface Unassigned {

@@ -15,7 +15,7 @@ const patchSchema = z.object({
    * can say WHICH kind of inactive a client is, and the client's rule ("paused
    * or churned -> pause the campaigns, turn the portal off") needs that.
    */
-  status: z.enum(["active", "paused", "churned", "prospect"]).optional(),
+  status: z.enum(["onboarding", "active", "paused", "churned"]).optional(),
 });
 
 export async function PATCH(
