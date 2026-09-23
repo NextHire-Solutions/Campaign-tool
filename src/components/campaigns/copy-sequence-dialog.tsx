@@ -50,9 +50,20 @@ interface Plan {
 }
 
 interface CampaignOption {
-  id: number;
+  /*
+   * A STRING over the wire. /api/campaigns reads the cross-platform
+   * `campaigns_unified` view, whose id column is text so an EmailBison bigint
+   * and an Instantly uuid can share it — so even EmailBison campaigns arrive
+   * as "297". Typing it `number` here was a lie TypeScript could not catch,
+   * because it comes from response.json(). The route requires a number, so
+   * every copy failed validation with "Invalid request" while the dialog
+   * still displayed the source name (its lookup compares string to string).
+   * Normalised to a number in `options` below, once, at the boundary.
+   */
+  id: number | string;
   name: string;
   status: string;
+  platform?: string;
 }
 
 export function CopySequenceDialog({
@@ -95,8 +106,19 @@ export function CopySequenceDialog({
     staleTime: 60_000,
   });
 
-  // A campaign cannot be its own source; excluded here so it can't be picked.
-  const options = (list?.items ?? []).filter((c) => c.id !== targetId);
+  /*
+   * Only EmailBison campaigns can be a source: a sequence is copied through
+   * EmailBison's own API, which keys campaigns by bigint. Instantly campaigns
+   * are two thirds of this list and have uuid ids, so offering one is offering
+   * a choice that cannot work.
+   *
+   * A campaign cannot be its own source either, so it is excluded here rather
+   * than left pickable.
+   */
+  const options: Array<CampaignOption & { id: number }> = (list?.items ?? [])
+    .filter((c) => (c.platform ?? "emailbison") === "emailbison")
+    .map((c) => ({ ...c, id: Number(c.id) }))
+    .filter((c) => Number.isInteger(c.id) && c.id !== Number(targetId));
   const source = options.find((c) => c.id === sourceId);
 
   const preview = useMutation({

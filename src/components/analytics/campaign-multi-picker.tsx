@@ -28,9 +28,15 @@ import { cn } from "@/lib/utils";
  */
 
 interface Campaign {
-  id: number;
+  /*
+   * Text over the wire: /api/campaigns reads `campaigns_unified`, whose id
+   * column holds an EmailBison bigint and an Instantly uuid in one column, so
+   * even "297" arrives as a string. Normalised once below.
+   */
+  id: number | string;
   name: string;
   status: string;
+  platform?: string;
 }
 
 export function CampaignMultiPicker({
@@ -54,7 +60,15 @@ export function CampaignMultiPicker({
     staleTime: 60_000,
   });
 
-  const campaigns = (data?.items ?? []).filter((c) => c.id !== exclude);
+  /*
+   * Both callers — Push sequence and Copy & Offer — work through EmailBison's
+   * sequence API, which keys campaigns by bigint. An Instantly campaign has a
+   * uuid and cannot be a target, so offering one offers a choice that fails.
+   */
+  const campaigns = (data?.items ?? [])
+    .filter((c) => (c.platform ?? "emailbison") === "emailbison")
+    .map((c) => ({ ...c, id: Number(c.id) }))
+    .filter((c) => Number.isInteger(c.id) && c.id !== exclude);
   const chosen = campaigns.filter((c) => value.includes(c.id));
 
   function toggle(id: number) {

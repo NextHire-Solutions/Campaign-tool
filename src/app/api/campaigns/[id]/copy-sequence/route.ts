@@ -22,7 +22,14 @@ export const maxDuration = 120;
 const TEAM_ID = () => Number(process.env.EMAILBISON_TEAM_ID || 2);
 
 const Body = z.object({
-  sourceCampaignId: z.number().int().positive(),
+  /*
+   * Coerced, because the campaign list this id comes from is the
+   * `campaigns_unified` view, whose id column is text — so a perfectly good
+   * EmailBison id arrives as "297". Requiring a number here rejected every
+   * copy the UI attempted. Coercion accepts "297" and still rejects an
+   * Instantly uuid, which is the case that genuinely cannot be a source.
+   */
+  sourceCampaignId: z.coerce.number().int().positive(),
   mode: z.enum(["replace", "append"]),
   includeVariants: z.boolean().default(true),
   // §9.4 lists copy tags alongside variants and attachments. Defaults on: a
@@ -52,10 +59,26 @@ export async function POST(
     return NextResponse.json({ error: "Invalid campaign id" }, { status: 400 });
   }
 
-  const parsed = Body.safeParse(await request.json().catch(() => null));
+  const raw = await request.json().catch(() => null);
+  const parsed = Body.safeParse(raw);
   if (!parsed.success) {
+    /*
+     * Name the field. "Invalid request" was reported from the product as
+     * "Copy a sequence from doesn't work", and the screenshot could not say
+     * why: the route knew which field it had rejected and put it in `detail`,
+     * which the dialog throws away. A 400 a user can read is the difference
+     * between a bug report and a fix.
+     */
+    const issue = parsed.error.issues[0];
+    const field = issue?.path.join(".") || "body";
+    const received = raw === null
+      ? "the request body was not valid JSON"
+      : `received ${JSON.stringify((raw as Record<string, unknown>)?.[String(issue?.path[0])])}`;
     return NextResponse.json(
-      { error: "Invalid request", detail: parsed.error.flatten() },
+      {
+        error: `Invalid request: ${field} — ${issue?.message ?? "failed validation"} (${received})`,
+        detail: parsed.error.flatten(),
+      },
       { status: 400 },
     );
   }
