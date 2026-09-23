@@ -34,9 +34,24 @@ interface Client {
   slug: string;
   aliases: string[];
   matchMode: "contains" | "prefix" | "exact";
+  status: "active" | "paused" | "churned" | "prospect";
   campaignCount: number;
   manualCount: number;
 }
+
+/*
+ * Paused and churned clients are kept, never deleted — their campaigns and
+ * history belong to them and a paused client comes back. But the list existed
+ * to answer "who are our clients", and showing 53 rows for a roster of 35
+ * answers it wrongly. So the list is the live roster by default and the rest
+ * is one click away.
+ */
+const STATUS_STYLE: Record<Client["status"], string> = {
+  active: "bg-emerald-50 text-emerald-700 ring-emerald-600/20",
+  paused: "bg-amber-50 text-amber-700 ring-amber-600/20",
+  churned: "bg-muted text-muted-foreground ring-border",
+  prospect: "bg-sky-50 text-sky-700 ring-sky-600/20",
+};
 
 interface Unassigned {
   campaignId: number;
@@ -57,6 +72,7 @@ export function ClientsPage() {
   const [editing, setEditing] = useState<Client | null>(null);
   const [creating, setCreating] = useState(false);
   const [showUnassigned, setShowUnassigned] = useState(true);
+  const [showInactive, setShowInactive] = useState(false);
 
   const { data, isLoading } = useQuery<Payload>({
     queryKey: ["clients-admin"],
@@ -106,8 +122,12 @@ export function ClientsPage() {
 
   if (isLoading) return <Skeleton className="m-4 h-96" />;
 
-  const clients = sortRows(data?.clients ?? [], sort, (row, key) =>
-    (row as unknown as Record<string, unknown>)[key] ?? null,
+  const all = data?.clients ?? [];
+  const inactiveCount = all.filter((c) => c.status !== "active").length;
+  const clients = sortRows(
+    showInactive ? all : all.filter((c) => c.status === "active"),
+    sort,
+    (row, key) => (row as unknown as Record<string, unknown>)[key] ?? null,
   );
   const unassigned = data?.unassigned ?? [];
 
@@ -117,8 +137,21 @@ export function ClientsPage() {
         <div>
           <h1 className="text-sm font-medium">Clients</h1>
           <p className="text-xs text-muted-foreground">
-            {clients.length} clients · {data?.excludedCount ?? 0} campaigns excluded
-            from analytics
+            {clients.length} {showInactive ? "clients" : "active clients"}
+            {inactiveCount > 0 ? (
+              <>
+                {" · "}
+                <button
+                  type="button"
+                  onClick={() => setShowInactive((v) => !v)}
+                  className="underline underline-offset-2 hover:text-foreground"
+                >
+                  {showInactive ? "hide" : "show"} {inactiveCount} paused/churned
+                </button>
+              </>
+            ) : null}
+            {" · "}
+            {data?.excludedCount ?? 0} campaigns excluded from analytics
           </p>
         </div>
         <Button size="sm" className="h-8 gap-1.5 text-xs" onClick={() => setCreating(true)}>
@@ -189,9 +222,18 @@ export function ClientsPage() {
                               <SelectValue placeholder="Assign to client…" />
                             </SelectTrigger>
                             <SelectContent>
-                              {clients.map((c) => (
+                              {/*
+                                Every client, not the filtered view: a campaign
+                                that ran for a client who has since paused or
+                                churned still belongs to them, and hiding them
+                                here would make it unassignable.
+                              */}
+                              {all.map((c) => (
                                 <SelectItem key={c.id} value={c.id} className="text-xs">
                                   {c.name}
+                                  {c.status !== "active" ? (
+                                    <span className="ml-1 text-muted-foreground">({c.status})</span>
+                                  ) : null}
                                 </SelectItem>
                               ))}
                             </SelectContent>
@@ -212,6 +254,7 @@ export function ClientsPage() {
               <tr className="border-b bg-muted/30 text-[11px] uppercase tracking-wider text-muted-foreground">
                 <SortableHeader label="Client" sortKey="name" align="left" sort={sort} onToggle={toggle} className="px-4 py-2" />
                 <th className="px-3 py-2 text-left font-medium">Aliases</th>
+                <SortableHeader label="Status" sortKey="status" align="left" sort={sort} onToggle={toggle} className="px-3 py-2" />
                 <SortableHeader label="Match" sortKey="matchMode" align="left" sort={sort} onToggle={toggle} className="px-3 py-2" />
                 <SortableHeader label="Campaigns" sortKey="campaignCount" sort={sort} onToggle={toggle} className="px-3 py-2" />
                 <th className="w-24 px-3 py-2" />
@@ -236,6 +279,16 @@ export function ClientsPage() {
                         <span className="text-xs text-muted-foreground/50">—</span>
                       )}
                     </div>
+                  </td>
+                  <td className="px-3 py-2.5">
+                    <span
+                      className={cn(
+                        "rounded px-1.5 py-0.5 text-[11px] font-medium capitalize ring-1 ring-inset",
+                        STATUS_STYLE[c.status] ?? STATUS_STYLE.active,
+                      )}
+                    >
+                      {c.status}
+                    </span>
                   </td>
                   <td className="px-3 py-2.5 text-xs text-muted-foreground">
                     {c.matchMode}

@@ -9,6 +9,13 @@ const patchSchema = z.object({
   aliases: z.array(z.string().min(1)).max(20).optional(),
   matchMode: z.enum(["contains", "prefix", "exact"]).optional(),
   active: z.boolean().optional(),
+  /*
+   * The authority. `active` is kept for older callers and a database trigger
+   * keeps the two in step, so writing either one is safe — but only `status`
+   * can say WHICH kind of inactive a client is, and the client's rule ("paused
+   * or churned -> pause the campaigns, turn the portal off") needs that.
+   */
+  status: z.enum(["active", "paused", "churned", "prospect"]).optional(),
 });
 
 export async function PATCH(
@@ -26,6 +33,7 @@ export async function PATCH(
   if (parsed.data.aliases !== undefined) patch.aliases = parsed.data.aliases;
   if (parsed.data.matchMode !== undefined) patch.match_mode = parsed.data.matchMode;
   if (parsed.data.active !== undefined) patch.active = parsed.data.active;
+  if (parsed.data.status !== undefined) patch.status = parsed.data.status;
 
   const { data, error } = await getSupabase()
     .from("clients").update(patch).eq("id", id).select().single();

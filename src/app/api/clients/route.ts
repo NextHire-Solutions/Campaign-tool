@@ -16,7 +16,7 @@ export async function GET() {
   const teamId = TEAM_ID();
 
   const [clients, mappings, campaigns, instantlyMappings, instantlyCampaigns] = await Promise.all([
-    sb.from("clients").select("id, name, slug, aliases, match_mode, active").eq("team_id", teamId).order("name"),
+    sb.from("clients").select("id, name, slug, aliases, match_mode, active, status").eq("team_id", teamId).order("name"),
     sb.from("campaign_clients").select("campaign_id, client_id, match_method, matched_on, ambiguous, excluded"),
     sb.from("campaigns").select("id, name, status, lifetime_emails_sent").eq("team_id", teamId),
     /*
@@ -99,6 +99,7 @@ export async function GET() {
       aliases: c.aliases ?? [],
       matchMode: c.match_mode,
       active: c.active,
+      status: c.status ?? (c.active ? "active" : "paused"),
       campaignCount: counts.get(c.id)?.total ?? 0,
       manualCount: counts.get(c.id)?.manual ?? 0,
       /* Of those, how many are Instantly's — so the split is visible. */
