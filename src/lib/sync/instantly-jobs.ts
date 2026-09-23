@@ -22,6 +22,8 @@ import type { JobFn, JobResult } from "./runner";
  *    incrementally off a watermark and why the deep sweep is a separate job.
  */
 
+import { confirmGone, type GoneVerdict } from "./confirm-gone.ts";
+
 const TEAM_ID = () => Number(process.env.EMAILBISON_TEAM_ID || 2);
 
 function domainOf(email: string | null | undefined): string | null {
@@ -93,7 +95,19 @@ export const syncInstantlyCampaigns: JobFn = async (): Promise<JobResult> => {
     .map((r) => r.id)
     .filter((id) => !seen.has(id));
 
-  const suspicious = rows.length < (live?.length ?? 0) * 0.5;
+  /*
+   * A shortfall is no longer decided by arithmetic alone. When the walk comes
+   * back far smaller than what we hold, the missing ids are probed one by one:
+   * all 404 means they are really gone, anything else means the walk was bad.
+   * See confirm-gone.ts — written after a client deleted all 318 campaigns and
+   * the old guard declined, hourly, for seventeen hours.
+   */
+  const shortfall = rows.length < (live?.length ?? 0) * 0.5;
+  let verdict: GoneVerdict = { archive: true, reason: "walk looks complete" };
+  if (stale.length && shortfall) {
+    verdict = await confirmGone(stale, { fetchOne: (id) => client.getCampaign(id) });
+  }
+  const suspicious = shortfall && !verdict.archive;
   let archived = 0;
   if (stale.length && !suspicious) {
     const { error } = await sb
@@ -105,7 +119,7 @@ export const syncInstantlyCampaigns: JobFn = async (): Promise<JobResult> => {
     archived = stale.length;
   } else if (suspicious) {
     console.warn(
-      `[sync-instantly-campaigns] declined to archive ${stale.length}: walk returned ` +
+      `[sync-instantly-campaigns] ${verdict.reason} — declined to archive ${stale.length}: walk returned ` +
         `${rows.length} against ${live?.length ?? 0} live — looks truncated`,
     );
   }
