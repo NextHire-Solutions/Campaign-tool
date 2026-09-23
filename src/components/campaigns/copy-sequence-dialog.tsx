@@ -13,6 +13,7 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { cn } from "@/lib/utils";
+import { platformOfId } from "@/lib/campaigns/campaign-id.ts";
 
 /*
  * Copy a sequence into this campaign (spec §9.4).
@@ -72,7 +73,7 @@ export function CopySequenceDialog({
   open,
   onOpenChange,
 }: {
-  targetId: number;
+  targetId: number | string;
   targetName: string;
   open: boolean;
   onOpenChange: (open: boolean) => void;
@@ -80,7 +81,7 @@ export function CopySequenceDialog({
   const queryClient = useQueryClient();
   const [stage, setStage] = useState<"pick" | "options" | "review">("pick");
   const [search, setSearch] = useState("");
-  const [sourceId, setSourceId] = useState<number | null>(null);
+  const [sourceId, setSourceId] = useState<string | number | null>(null);
   const [mode, setMode] = useState<Mode>("append");
   const [includeVariants, setIncludeVariants] = useState(true);
   const [includeAttachments, setIncludeAttachments] = useState(true);
@@ -93,10 +94,24 @@ export function CopySequenceDialog({
   const [plan, setPlan] = useState<Plan | null>(null);
   const [typed, setTyped] = useState("");
 
+  const targetPlatform = platformOfId(String(targetId)) ?? "emailbison";
+
   const { data: list } = useQuery<{ items: CampaignOption[] }>({
-    queryKey: ["campaigns", "all", search],
+    queryKey: ["campaigns", "copy-source", targetPlatform, search],
     queryFn: async () => {
-      const params = new URLSearchParams({ status: "all" });
+      /*
+       * Ask for this platform's campaigns only, and for all of them.
+       *
+       * The default page is 200 ordered by lifetime sends, which quietly hid
+       * every low-volume campaign: a freshly created one has sent nothing, so
+       * it sorted last and fell off the end. The picker then showed no
+       * campaigns at all on a workspace that had them.
+       */
+      const params = new URLSearchParams({
+        status: "all",
+        platforms: targetPlatform,
+        limit: "500",
+      });
       if (search) params.set("q", search);
       const response = await fetch(`/api/campaigns?${params}`);
       if (!response.ok) throw new Error("Failed to load campaigns");
@@ -107,19 +122,20 @@ export function CopySequenceDialog({
   });
 
   /*
-   * Only EmailBison campaigns can be a source: a sequence is copied through
-   * EmailBison's own API, which keys campaigns by bigint. Instantly campaigns
-   * are two thirds of this list and have uuid ids, so offering one is offering
-   * a choice that cannot work.
+   * Sources must be on the SAME platform as the target. A sequence is copied
+   * verbatim and the two platforms do not write copy the same way —
+   * EmailBison merges {FIRST_NAME} and spins {Hi|Hello}, Instantly merges
+   * {{firstName}} and spins {{RANDOM |Hi|Hello}} — so a cross-platform copy
+   * would arrive broken. The server refuses one; this stops it being offered.
    *
-   * A campaign cannot be its own source either, so it is excluded here rather
-   * than left pickable.
+   * The platform comes from the target id's own shape: EmailBison keys with a
+   * bigint, Instantly with a uuid, so the two cannot be confused.
    */
-  const options: Array<CampaignOption & { id: number }> = (list?.items ?? [])
-    .filter((c) => (c.platform ?? "emailbison") === "emailbison")
-    .map((c) => ({ ...c, id: Number(c.id) }))
-    .filter((c) => Number.isInteger(c.id) && c.id !== Number(targetId));
-  const source = options.find((c) => c.id === sourceId);
+  const options: CampaignOption[] = (list?.items ?? [])
+    .filter((c) => (c.platform ?? "emailbison") === targetPlatform)
+    // a campaign cannot be its own source
+    .filter((c) => String(c.id) !== String(targetId));
+  const source = options.find((c) => String(c.id) === String(sourceId));
 
   const preview = useMutation({
     mutationFn: async () => {
@@ -238,11 +254,11 @@ export function CopySequenceDialog({
                     onClick={() => setSourceId(c.id)}
                     className={cn(
                       "flex w-full items-center gap-2 rounded px-2 py-1.5 text-left text-xs hover:bg-accent",
-                      sourceId === c.id && "bg-accent",
+                      String(sourceId) === String(c.id) && "bg-accent",
                     )}
                   >
                     <span className="flex size-3.5 shrink-0 items-center justify-center rounded-full border">
-                      {sourceId === c.id ? <Check className="size-2.5" /> : null}
+                      {String(sourceId) === String(c.id) ? <Check className="size-2.5" /> : null}
                     </span>
                     <span className="min-w-0 flex-1 truncate">{c.name}</span>
                     <span className="shrink-0 text-muted-foreground">{c.status}</span>
