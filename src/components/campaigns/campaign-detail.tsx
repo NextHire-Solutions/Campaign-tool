@@ -22,6 +22,7 @@ import { CampaignLeads } from "@/components/campaigns/campaign-leads";
 import { OfferPicker } from "@/components/campaigns/offer-picker";
 import { DASH, fullNumber, percent } from "@/lib/analytics/format.ts";
 import { platformOfId } from "@/lib/campaigns/campaign-id.ts";
+import { campaignKey } from "@/lib/campaigns/query-keys.ts";
 import { STATUS_TONE, canApply, isKnownStatus } from "@/lib/campaigns/status.ts";
 import { cn } from "@/lib/utils";
 
@@ -126,7 +127,7 @@ export function CampaignDetail({ id }: { id: string }) {
    */
 
   const { data, isLoading, error } = useQuery<DetailResponse>({
-    queryKey: ["campaign", id],
+    queryKey: campaignKey(id),
     queryFn: async () => {
       const response = await fetch(`/api/campaigns/${id}`);
       if (!response.ok) {
@@ -153,7 +154,7 @@ export function CampaignDetail({ id }: { id: string }) {
       return body;
     },
     onSuccess: () => {
-      void queryClient.invalidateQueries({ queryKey: ["campaign", id] });
+      void queryClient.invalidateQueries({ queryKey: campaignKey(id) });
       void queryClient.invalidateQueries({ queryKey: ["campaigns"] });
     },
   });
@@ -310,7 +311,7 @@ export function CampaignDetail({ id }: { id: string }) {
             targets={[{ platform, id: String(campaign.id) }]}
             open={assigningInboxes}
             onOpenChange={setAssigningInboxes}
-            onDone={() => void queryClient.invalidateQueries({ queryKey: ["campaign", id] })}
+            onDone={() => void queryClient.invalidateQueries({ queryKey: campaignKey(id) })}
           />
         ) : null}
 
@@ -776,7 +777,7 @@ function Settings({ campaign }: { campaign: Campaign }) {
       return body;
     },
     onSuccess: () => {
-      void queryClient.invalidateQueries({ queryKey: ["campaign", campaign.id] });
+      void queryClient.invalidateQueries({ queryKey: campaignKey(campaign.id) });
       void queryClient.invalidateQueries({ queryKey: ["campaigns"] });
     },
   });

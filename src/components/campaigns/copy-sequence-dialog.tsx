@@ -14,6 +14,7 @@ import {
 } from "@/components/ui/dialog";
 import { cn } from "@/lib/utils";
 import { platformOfId } from "@/lib/campaigns/campaign-id.ts";
+import { campaignKey } from "@/lib/campaigns/query-keys.ts";
 
 /*
  * Copy a sequence into this campaign (spec §9.4).
@@ -186,7 +187,7 @@ export function CopySequenceDialog({
       return body;
     },
     onSuccess: () => {
-      void queryClient.invalidateQueries({ queryKey: ["campaign", targetId] });
+      void queryClient.invalidateQueries({ queryKey: campaignKey(targetId) });
       close();
     },
   });

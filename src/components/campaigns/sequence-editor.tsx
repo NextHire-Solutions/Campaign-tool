@@ -22,6 +22,7 @@ import {
 } from "@/components/ui/dropdown-menu";
 import { EmailPanel } from "@/components/analytics/email-panel";
 import { countVariations } from "@/lib/spintax.ts";
+import { campaignKey } from "@/lib/campaigns/query-keys.ts";
 import { cn } from "@/lib/utils";
 import { CopyTagsPanel } from "@/components/campaigns/copy-tags-panel";
 
@@ -170,7 +171,7 @@ export function SequenceEditor({
       return body;
     },
     onSuccess: () => {
-      void queryClient.invalidateQueries({ queryKey: ["campaign", campaignId] });
+      void queryClient.invalidateQueries({ queryKey: campaignKey(campaignId) });
       onDone();
     },
   });
