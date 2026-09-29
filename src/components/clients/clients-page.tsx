@@ -27,6 +27,7 @@ import { fullNumber } from "@/lib/analytics/format.ts";
 import { SortableHeader } from "@/components/analytics/sortable-header";
 import { sortRows, useTableSort } from "@/hooks/use-table-sort";
 import { cn } from "@/lib/utils";
+import { countRoster, notCounted } from "@/lib/clients/roster-count";
 
 interface Client {
   id: string;
@@ -128,6 +129,9 @@ export function ClientsPage() {
   if (isLoading) return <Skeleton className="m-4 h-96" />;
 
   const all = data?.clients ?? [];
+  // Clients, not rows: Demo Portal and second portals are listed, not counted
+  // (lib/clients/roster-count.ts — the same rules BrokerStaffer OS counts by).
+  const counted = countRoster(all);
   const inactiveCount = all.filter((c) => c.status !== "active").length;
   const clients = sortRows(
     showInactive ? all : all.filter((c) => c.status === "active"),
@@ -142,7 +146,7 @@ export function ClientsPage() {
         <div>
           <h1 className="text-sm font-medium">Clients</h1>
           <p className="text-xs text-muted-foreground">
-            {clients.length} {showInactive ? "clients" : "active clients"}
+            {counted.clients} clients · {counted.active} active
             {inactiveCount > 0 ? (
               <>
                 {" · "}
@@ -151,9 +155,16 @@ export function ClientsPage() {
                   onClick={() => setShowInactive((v) => !v)}
                   className="underline underline-offset-2 hover:text-foreground"
                 >
-                  {showInactive ? "hide" : "show"} {inactiveCount} paused/churned
+                  {showInactive ? "hide" : "show"} {counted.inactive} paused/churned
                 </button>
               </>
+            ) : null}
+            {counted.left.length ? (
+              <span title={counted.left.map((l) => `${l.name} — ${l.why}`).join("\n")}>
+                {" · "}
+                {counted.left.length} more row{counted.left.length === 1 ? "" : "s"} not counted (
+                {counted.left.map((l) => l.name).join(", ")})
+              </span>
             ) : null}
             {" · "}
             {data?.excludedCount ?? 0} campaigns excluded from analytics
@@ -268,7 +279,14 @@ export function ClientsPage() {
             <tbody>
               {clients.map((c) => (
                 <tr key={c.id} className="border-b last:border-b-0 hover:bg-accent/30">
-                  <td className="px-4 py-2.5 font-medium">{c.name}</td>
+                  <td className="px-4 py-2.5 font-medium">
+                    {c.name}
+                    {notCounted(c, all) ? (
+                      <div className="text-[11px] font-normal text-muted-foreground">
+                        {notCounted(c, all)} — not counted
+                      </div>
+                    ) : null}
+                  </td>
                   <td className="px-3 py-2.5">
                     <div className="flex flex-wrap gap-1">
                       {c.aliases.length ? (
