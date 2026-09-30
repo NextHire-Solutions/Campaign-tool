@@ -315,6 +315,14 @@ export class EmailBisonClient {
     );
   }
 
+  /** Turn a step or variant on or off. EmailBison only allows it while the campaign is PAUSED. */
+  async setSequenceStepActive(stepId: number, active: boolean) {
+    return this.request<unknown>(`/api/campaigns/sequence-steps/${stepId}/activate-or-deactivate`, {
+      method: "PATCH",
+      body: JSON.stringify({ active }),
+    });
+  }
+
   async deleteSequenceStep(stepId: number) {
     return this.request<unknown>(`/api/campaigns/sequence-steps/${stepId}`, {
       method: "DELETE",
@@ -395,6 +403,20 @@ export class EmailBisonClient {
    * "applied" figure is the difference in this number, never the length of the
    * array we sent.
    */
+  /** The workspace's tags — including the mail-server tags EmailBison puts on every lead. */
+  async listTags(): Promise<{ id: number; name: string }[]> {
+    const response = await this.request<{ data?: { id: number; name: string }[] }>(`/api/tags`);
+    return response?.data ?? [];
+  }
+
+  /** Ids of a campaign's leads that carry one tag (every page, by cursor). */
+  async campaignLeadIdsWithTag(campaignId: number, tagId: number): Promise<number[]> {
+    const rows = await this.fetchAllPages<{ id: number }>(`/api/campaigns/${campaignId}/leads`, {
+      "filters[tag_ids][]": tagId,
+    });
+    return rows.map((r) => r.id);
+  }
+
   async getCampaignLeadCount(campaignId: number): Promise<number> {
     const response = await this.request<{ meta?: { total?: number } }>(
       `/api/campaigns/${campaignId}/leads?page=1`,

@@ -160,6 +160,27 @@ export async function GET(request: NextRequest) {
 
   const clientById = new Map((clients.data ?? []).map((c) => [c.id, c.name]));
 
+  /*
+   * SENDING LIMITS (1 Oct): daily send limit / new leads per day, e.g. 1,000 / 500.
+   * EmailBison's are synced into `campaigns`; Instantly's (daily_limit,
+   * daily_max_leads) are not stored, so they are read from Instantly for the
+   * Instantly campaigns on this page only, cached for a few minutes.
+   */
+  const pageRows = rows ?? [];
+  const ebIds = pageRows.filter((c) => c.platform === "emailbison").map((c) => Number(c.id)).filter(Number.isFinite);
+  const inIds = pageRows.filter((c) => c.platform === "instantly").map((c) => String(c.id));
+  const limits = new Map<string, { daily: number | null; newLeads: number | null }>();
+  if (ebIds.length) {
+    const { data: lim } = await sb.from("campaigns").select("id, max_emails_per_day, max_new_leads_per_day").in("id", ebIds);
+    for (const r of (lim ?? []) as { id: number; max_emails_per_day: number | null; max_new_leads_per_day: number | null }[]) {
+      limits.set(String(r.id), { daily: r.max_emails_per_day ?? null, newLeads: r.max_new_leads_per_day ?? null });
+    }
+  }
+  if (inIds.length) {
+    for (const [id, v] of await instantlyLimits(inIds)) limits.set(id, v);
+  }
+
+
   // The view already carries the mapping, so there is no second lookup to drift
   // out of step with it.
   const items = (rows ?? []).map((c) => ({
@@ -169,6 +190,7 @@ export async function GET(request: NextRequest) {
     excluded: Boolean(c.excluded),
     ambiguous: Boolean(c.ambiguous),
     eb_updated_at: c.updated_at ?? null,
+    sendingLimits: limits.get(String(c.id)) ?? { daily: c.max_emails_per_day ?? null, newLeads: null },
   }));
 
   const statusCounts: Record<string, number> = {};
@@ -200,4 +222,32 @@ export async function GET(request: NextRequest) {
       ),
     ].sort(),
   });
+}
+
+/* Instantly limits, read live and cached per campaign for five minutes. */
+const instantlyLimitCache = new Map<string, { at: number; v: { daily: number | null; newLeads: number | null } }>();
+async function instantlyLimits(ids: string[]): Promise<Map<string, { daily: number | null; newLeads: number | null }>> {
+  const out = new Map<string, { daily: number | null; newLeads: number | null }>();
+  const todo = ids.filter((id) => {
+    const hit = instantlyLimitCache.get(id);
+    if (hit && Date.now() - hit.at < 300_000) { out.set(id, hit.v); return false; }
+    return true;
+  });
+  if (!todo.length) return out;
+  const { createInstantlyClient } = await import("@/lib/instantly/client.ts");
+  const client = createInstantlyClient();
+  for (let i = 0; i < todo.length; i += 5) {
+    await Promise.all(todo.slice(i, i + 5).map(async (id) => {
+      try {
+        const c = await client.getCampaign(id);
+        const num = (x: unknown) => (typeof x === "number" && Number.isFinite(x) ? x : null);
+        const v = { daily: num(c.daily_limit), newLeads: num(c.daily_max_leads) };
+        instantlyLimitCache.set(id, { at: Date.now(), v });
+        out.set(id, v);
+      } catch {
+        /* unreadable: shown as — */
+      }
+    }));
+  }
+  return out;
 }

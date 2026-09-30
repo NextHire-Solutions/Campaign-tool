@@ -1,10 +1,11 @@
 "use client";
 
-import { useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { AlertTriangle, ChevronDown, ChevronRight } from "lucide-react";
 import { EmailPanel } from "@/components/analytics/email-panel";
 import { fullNumber } from "@/lib/analytics/format.ts";
 import { cn } from "@/lib/utils";
+import type { LiveSequence, LiveStep } from "@/lib/campaigns/sequence-live.ts";
 
 /*
  * The sequence, read-only: steps in order, variants nested under the step they
@@ -134,9 +135,12 @@ export function StepStatsRow({ stats }: { stats: StepStats | null }) {
 function VariantRow({
   variant,
   index,
+  actions,
 }: {
   variant: Omit<SequenceStep, "variants">;
   index: number;
+  /** Delete / Turn off / Turn on for this variant, when the live sequence was read. */
+  actions?: React.ReactNode;
 }) {
   const [open, setOpen] = useState(false);
 
@@ -165,6 +169,7 @@ function VariantRow({
           </span>
         </span>
       </button>
+      {actions ? <div className="flex flex-wrap items-center gap-2 border-t px-2.5 py-1.5">{actions}</div> : null}
 
       {open ? (
         <div className="border-t bg-background p-2.5">
@@ -175,12 +180,67 @@ function VariantRow({
   );
 }
 
-export function SequenceView({ steps }: { steps: SequenceStep[] }) {
+export function SequenceView({ steps, campaignId, platform, onChanged }: {
+  steps: SequenceStep[];
+  /** With these, each step and variant offers Delete (never sent) or Turn off / Turn on (1 Oct). */
+  campaignId?: string;
+  platform?: "emailbison" | "instantly";
+  onChanged?: () => void;
+}) {
   const [open, setOpen] = useState<number | null>(steps[0]?.id ?? null);
   const spin = spintaxOf(steps);
+  const [live, setLive] = useState<LiveSequence | null>(null);
+  const [busy, setBusy] = useState<string | null>(null);
+  const [notice, setNotice] = useState<{ text: string; bad?: boolean } | null>(null);
+  const loadLive = useCallback(() => {
+    if (!campaignId) return;
+    fetch(`/api/campaigns/${encodeURIComponent(campaignId)}/sequence/live`, { cache: "no-store" })
+      .then((r) => (r.ok ? r.json() : null)).then((v) => setLive(v as LiveSequence | null)).catch(() => setLive(null));
+  }, [campaignId]);
+  useEffect(() => { loadLive(); }, [loadLive, steps.length]);
+  const keyOf = (step: SequenceStep, index: number, variantIndex: number) =>
+    platform === "instantly"
+      ? `${(step.step_order ?? index + 1) - 1}:${variantIndex}`
+      : String(variantIndex === 0 ? step.id : step.variants[variantIndex - 1]?.id);
+  const liveOf = (key: string) => live?.steps.find((x) => x.key === key);
+  async function act(key: string, action: "delete" | "turn-off" | "turn-on", label: string) {
+    const question = action === "delete" ? `Delete ${label}? This cannot be undone.` : action === "turn-off" ? `Stop sending ${label}? Its stats are kept.` : `Send ${label} again?`;
+    if (!window.confirm(question)) return;
+    setBusy(key); setNotice(null);
+    try {
+      const res = await fetch(`/api/campaigns/${encodeURIComponent(campaignId ?? "")}/sequence/live`, {
+        method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ key, action, confirm: true }),
+      });
+      const body = await res.json().catch(() => null);
+      if (!res.ok) throw new Error(body?.error ?? `HTTP ${res.status}`);
+      setLive(body as LiveSequence);
+      setNotice({ text: action === "delete" ? `${label} deleted.` : action === "turn-off" ? `${label} turned off — it will not send.` : `${label} turned back on.` });
+      onChanged?.();
+    } catch (e) {
+      setNotice({ text: e instanceof Error ? e.message : "Could not change the sequence.", bad: true });
+    } finally {
+      setBusy(null);
+    }
+  }
+  const actionsFor = (l: LiveStep | undefined, label: string) => {
+    if (!l) return null;
+    const btn = "rounded-md border px-2 py-0.5 text-[11px] font-medium hover:bg-accent disabled:opacity-50";
+    const off = !l.active ? <span className="rounded bg-amber-100 px-1.5 text-[10px] font-medium text-amber-900">Off</span> : null;
+    if (l.canDelete) {
+      return <>{off}<button type="button" className={cn(btn, "text-red-700")} disabled={Boolean(busy)} title="It has never sent, so it can be removed." onClick={() => void act(l.key, "delete", label)}>{busy === l.key ? "Deleting…" : "Delete"}</button></>;
+    }
+    if (l.canToggle) {
+      return <>{off}<button type="button" className={btn} disabled={Boolean(busy)} title={l.active ? "It has sent, so it is turned off rather than deleted — its stats stay." : "Turns it back on."} onClick={() => void act(l.key, l.active ? "turn-off" : "turn-on", label)}>{busy === l.key ? "Saving…" : l.active ? "Turn off" : "Turn on"}</button></>;
+    }
+    const why = l.sent ? l.toggleWhy : l.deleteWhy;
+    return <>{off}{why ? <span className="text-[11px] text-muted-foreground">{why}</span> : null}</>;
+  };
 
   return (
     <div className="space-y-3">
+      {notice ? (
+        <p className={cn("rounded-md border p-2 text-xs", notice.bad ? "border-red-300/60 bg-red-50 text-red-800" : "border-emerald-300/60 bg-emerald-50 text-emerald-900")}>{notice.text}</p>
+      ) : null}
       {/*
         The signal where the copy actually is. A campaign-level card can tell
         you a sequence never varies; only here can you see WHICH step to fix,
@@ -275,6 +335,9 @@ export function SequenceView({ steps }: { steps: SequenceStep[] }) {
 
           {open === step.id ? (
             <div className="space-y-3 border-t p-3">
+              {liveOf(keyOf(step, index, 0)) ? (
+                <div className="flex flex-wrap items-center gap-2">{actionsFor(liveOf(keyOf(step, index, 0)), `step ${index + 1}`)}</div>
+              ) : null}
               <EmailPanel subject={step.email_subject} body={step.email_body} />
 
               {step.variants.length ? (
@@ -289,7 +352,8 @@ export function SequenceView({ steps }: { steps: SequenceStep[] }) {
                     losing against the step it replaces.
                   */}
                   {step.variants.map((variant, vi) => (
-                    <VariantRow key={variant.id} variant={variant} index={vi} />
+                    <VariantRow key={variant.id} variant={variant} index={vi}
+                      actions={actionsFor(liveOf(keyOf(step, index, vi + 1)), `variant ${String.fromCharCode(65 + vi)} of step ${index + 1}`)} />
                   ))}
                 </div>
               ) : null}

@@ -353,6 +353,12 @@ export class InstantlyClient {
     });
   }
 
+  /** Sends per step and variant (`step`, `variant` are 0-based indexes). */
+  async stepAnalytics(campaignId: string): Promise<unknown[]> {
+    const rows = await this.request<unknown[] | { items?: unknown[] }>(`/campaigns/analytics/steps?campaign_id=${encodeURIComponent(campaignId)}`);
+    return Array.isArray(rows) ? rows : rows?.items ?? [];
+  }
+
   async getCampaign(id: string): Promise<Record<string, unknown>> {
     return this.request<Record<string, unknown>>(`/campaigns/${id}`);
   }
@@ -485,6 +491,28 @@ export class InstantlyClient {
       { method: "POST", body: { campaign: campaignId, limit } },
     );
     return page?.items ?? [];
+  }
+
+  /**
+   * Every lead in a campaign with its mail-server code (`esp_code`: 1 Google,
+   * 2 Microsoft, 3 Zoho, 999 anything else — custom servers and security
+   * gateways such as Proofpoint, Mimecast and Barracuda; 0 not detected yet).
+   */
+  async walkCampaignLeads(campaignId: string): Promise<Array<{ id: string; esp_code: number | null }>> {
+    const out: Array<{ id: string; esp_code: number | null }> = [];
+    let after: string | null = null;
+    for (let pages = 0; pages < 2000; pages++) {
+      const body: Record<string, unknown> = { campaign: campaignId, limit: 100 };
+      if (after) body.starting_after = after;
+      const page = await this.request<{ items?: Array<{ id: string; esp_code?: number | null }>; next_starting_after?: string | null }>(
+        "/leads/list", { method: "POST", body },
+      );
+      for (const l of page?.items ?? []) out.push({ id: l.id, esp_code: l.esp_code ?? null });
+      const next = page?.next_starting_after ?? null;
+      if (!next || next === after || !(page?.items ?? []).length) break;
+      after = next;
+    }
+    return out;
   }
 
   /** Removes leads from a campaign. Ids only — never a bare campaign_id. */

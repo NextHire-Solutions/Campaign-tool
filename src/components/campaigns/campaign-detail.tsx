@@ -6,6 +6,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { ArrowLeft, Inbox, Loader2, Pause, Play } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { UnsupportedServersDialog } from "./unsupported-servers-dialog";
 import { AssignInboxesDialog } from "@/components/campaigns/assign-inboxes-dialog";
 import { CopySequenceDialog } from "@/components/campaigns/copy-sequence-dialog";
 import { PushSequenceDialog } from "@/components/campaigns/push-sequence-dialog";
@@ -119,6 +120,7 @@ export function CampaignDetail({ id }: { id: string }) {
   const queryClient = useQueryClient();
   const [tab, setTab] = useState<Tab>("Overview");
   const [assigningInboxes, setAssigningInboxes] = useState(false);
+  const [removingServers, setRemovingServers] = useState(false);
   /*
    * The tab list depends on the platform, and the SELECTED tab is corrected
    * during render rather than in an effect — the React Compiler lint forbids
@@ -273,6 +275,11 @@ export function CampaignDetail({ id }: { id: string }) {
                 Inboxes
               </Button>
             ) : null}
+            {platform ? (
+              <Button size="sm" variant="outline" onClick={() => setRemovingServers(true)} className="gap-1.5">
+                Remove Unsupported Mail Servers
+              </Button>
+            ) : null}
             {primary ? (
             <Button
               size="sm"
@@ -306,6 +313,16 @@ export function CampaignDetail({ id }: { id: string }) {
           </div>
         </div>
 
+        {platform ? (
+          <UnsupportedServersDialog
+            campaignId={String(campaign.id)}
+            campaignName={campaign.name}
+            platform={platform}
+            open={removingServers}
+            onOpenChange={setRemovingServers}
+            onDone={() => void queryClient.invalidateQueries({ queryKey: campaignKey(id) })}
+          />
+        ) : null}
         {platform ? (
           <AssignInboxesDialog
             targets={[{ platform, id: String(campaign.id) }]}
@@ -355,6 +372,8 @@ export function CampaignDetail({ id }: { id: string }) {
             campaignName={campaign.name}
             sequenceId={campaign.sequence_id ?? null}
             sentStepIds={sentStepIds ?? []}
+            platform={platform ?? "emailbison"}
+            onChanged={() => void queryClient.invalidateQueries({ queryKey: campaignKey(id) })}
           />
         ) : null}
         {activeTab === "Copy & Offer" ? (
@@ -608,12 +627,16 @@ function Sequence({
   campaignName,
   sequenceId,
   sentStepIds,
+  platform,
+  onChanged,
 }: {
   steps: Step[];
   campaignId: number;
   campaignName: string;
   sequenceId: number | null;
   sentStepIds: number[];
+  platform: "emailbison" | "instantly";
+  onChanged: () => void;
 }) {
   const [copying, setCopying] = useState(false);
   const [pushing, setPushing] = useState(false);
@@ -741,7 +764,7 @@ function Sequence({
         onDismiss={deploy.dismiss}
       />
       <div className="flex flex-wrap justify-end gap-2">{copyButton}</div>
-      <SequenceView steps={steps} />
+      <SequenceView steps={steps} campaignId={String(campaignId)} platform={platform} onChanged={onChanged} />
     </div>
   );
 }

@@ -82,6 +82,8 @@ interface Campaign {
   total_leads: number | null;
   lifetime_emails_sent: number | null;
   max_emails_per_day: number | null;
+  /** Daily send limit / new leads per day (1 Oct). */
+  sendingLimits?: { daily: number | null; newLeads: number | null };
   eb_updated_at: string | null;
   clientName: string | null;
   excluded: boolean;
@@ -631,6 +633,7 @@ export function CampaignsPage() {
                 <SortableHeader label="Replies" sortKey="lifetime_unique_replies" sort={sort} onToggle={toggle} className="px-2 py-2" />
                 <SortableHeader label="Leads" sortKey="total_leads" sort={sort} onToggle={toggle} className="px-2 py-2" />
                 <SortableHeader label="Progress" sortKey="completion_percentage" align="left" sort={sort} onToggle={toggle} className="w-28 px-2 py-2" />
+                <SortableHeader label="Sending limits" title="Daily send limit / New leads per day" sort={sort} onToggle={toggle} className="px-2 py-2" />
                 <SortableHeader label="Updated" sortKey="eb_updated_at" align="left" sort={sort} onToggle={toggle} className="px-2 py-2" />
                 <th className="w-9 px-2 py-2" />
               </tr>
@@ -711,6 +714,12 @@ export function CampaignsPage() {
                   </td>
                   <td className="px-2 py-2">
                     <ProgressBar value={campaign.completion_percentage} />
+                  </td>
+                  <td className="tnum px-2 py-2 text-right text-xs"
+                    title={`Daily send limit: ${campaign.sendingLimits?.daily ?? "not set"} · New leads per day: ${campaign.sendingLimits?.newLeads ?? "not set"}`}>
+                    {campaign.sendingLimits && (campaign.sendingLimits.daily != null || campaign.sendingLimits.newLeads != null)
+                      ? `${campaign.sendingLimits.daily != null ? fullNumber(campaign.sendingLimits.daily) : DASH}/${campaign.sendingLimits.newLeads != null ? fullNumber(campaign.sendingLimits.newLeads) : DASH}`
+                      : <span className="text-muted-foreground">{DASH}</span>}
                   </td>
                   <td className="px-2 py-2 text-xs text-muted-foreground">
                     {relativeTime(campaign.eb_updated_at)}
