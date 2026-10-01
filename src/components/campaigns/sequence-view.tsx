@@ -222,22 +222,29 @@ export function SequenceView({ steps, campaignId, platform, onChanged }: {
       setBusy(null);
     }
   }
+  // A sent step always shows Turn off / Turn on — greyed out with the reason
+  // when it can't be used right now (EmailBison: only while paused) — so the
+  // button is never hidden behind a note nobody notices.
   const actionsFor = (l: LiveStep | undefined, label: string) => {
     if (!l) return null;
-    const btn = "rounded-md border px-2 py-0.5 text-[11px] font-medium hover:bg-accent disabled:opacity-50";
+    const btn = "rounded-md border px-2 py-0.5 text-[11px] font-medium hover:bg-accent disabled:cursor-not-allowed disabled:opacity-50";
     const off = !l.active ? <span className="rounded bg-amber-100 px-1.5 text-[10px] font-medium text-amber-900">Off</span> : null;
-    if (l.canDelete) {
-      return <>{off}<button type="button" className={cn(btn, "text-red-700")} disabled={Boolean(busy)} title="It has never sent, so it can be removed." onClick={() => void act(l.key, "delete", label)}>{busy === l.key ? "Deleting…" : "Delete"}</button></>;
+    const note = (t: string | null) => (t ? <span className="text-[11px] text-muted-foreground">{t}</span> : null);
+    if ((l.sent ?? 0) > 0) {
+      return <>{off}<button type="button" className={btn} disabled={Boolean(busy) || !l.canToggle}
+        title={l.canToggle ? (l.active ? "It has sent, so it is turned off rather than deleted — its stats stay." : "Turns it back on.") : l.toggleWhy ?? ""}
+        onClick={() => void act(l.key, l.active ? "turn-off" : "turn-on", label)}>{busy === l.key ? "Saving…" : l.active ? "Turn off" : "Turn on"}</button>{l.canToggle ? null : note(l.toggleWhy)}</>;
     }
-    if (l.canToggle) {
-      return <>{off}<button type="button" className={btn} disabled={Boolean(busy)} title={l.active ? "It has sent, so it is turned off rather than deleted — its stats stay." : "Turns it back on."} onClick={() => void act(l.key, l.active ? "turn-off" : "turn-on", label)}>{busy === l.key ? "Saving…" : l.active ? "Turn off" : "Turn on"}</button></>;
-    }
-    const why = l.sent ? l.toggleWhy : l.deleteWhy;
-    return <>{off}{why ? <span className="text-[11px] text-muted-foreground">{why}</span> : null}</>;
+    return <>{off}<button type="button" className={cn(btn, "text-red-700")} disabled={Boolean(busy) || !l.canDelete}
+      title={l.canDelete ? "It has never sent, so it can be removed." : l.deleteWhy ?? ""}
+      onClick={() => void act(l.key, "delete", label)}>{busy === l.key ? "Deleting…" : "Delete"}</button>{l.canDelete ? null : note(l.deleteWhy)}</>;
   };
 
   return (
     <div className="space-y-3">
+      {campaignId ? (
+        <p className="text-[11px] text-muted-foreground">Open a step to delete it, or turn it off if it has sent.</p>
+      ) : null}
       {notice ? (
         <p className={cn("rounded-md border p-2 text-xs", notice.bad ? "border-red-300/60 bg-red-50 text-red-800" : "border-emerald-300/60 bg-emerald-50 text-emerald-900")}>{notice.text}</p>
       ) : null}

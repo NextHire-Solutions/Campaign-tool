@@ -248,9 +248,14 @@ export function CampaignsPage() {
   const { sort, toggle } = useTableSort();
   const items = useMemo(
     () =>
-      sortRows(data?.items ?? [], sort, (row, key) =>
-        (row as unknown as Record<string, unknown>)[key] ?? null,
-      ),
+      sortRows(data?.items ?? [], sort, (row, key) => {
+        // Daily send limit first, then new leads per day.
+        if (key === "sendingLimits") {
+          const l = row.sendingLimits;
+          return l && (l.daily != null || l.newLeads != null) ? (l.daily ?? 0) * 1_000_000 + (l.newLeads ?? 0) : null;
+        }
+        return (row as unknown as Record<string, unknown>)[key] ?? null;
+      }),
     [data, sort],
   );
 
@@ -633,7 +638,7 @@ export function CampaignsPage() {
                 <SortableHeader label="Replies" sortKey="lifetime_unique_replies" sort={sort} onToggle={toggle} className="px-2 py-2" />
                 <SortableHeader label="Leads" sortKey="total_leads" sort={sort} onToggle={toggle} className="px-2 py-2" />
                 <SortableHeader label="Progress" sortKey="completion_percentage" align="left" sort={sort} onToggle={toggle} className="w-28 px-2 py-2" />
-                <SortableHeader label="Sending limits" title="Daily send limit / New leads per day" sort={sort} onToggle={toggle} className="px-2 py-2" />
+                <SortableHeader label="Sending limits" sortKey="sendingLimits" title="Daily send limit / New leads per day" sort={sort} onToggle={toggle} className="px-2 py-2" />
                 <SortableHeader label="Updated" sortKey="eb_updated_at" align="left" sort={sort} onToggle={toggle} className="px-2 py-2" />
                 <th className="w-9 px-2 py-2" />
               </tr>
