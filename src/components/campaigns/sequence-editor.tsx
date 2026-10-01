@@ -1,5 +1,6 @@
 "use client";
 
+import { RichBody, type RichBodyHandle } from "./rich-body";
 import { useEffect, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
@@ -58,11 +59,11 @@ const FALLBACK_MERGE_TAGS = ["{FIRST_NAME}", "{LAST_NAME}", "{EMAIL}", "{COMPANY
 
 /** Wraps the selection. Kept to tags EmailBison renders in an email body. */
 const FORMATS = [
-  { label: "B", title: "Bold", open: "<strong>", close: "</strong>", className: "font-bold" },
-  { label: "I", title: "Italic", open: "<em>", close: "</em>", className: "italic" },
-  { label: "U", title: "Underline", open: "<u>", close: "</u>", className: "underline" },
-  { label: "¶", title: "Paragraph", open: "<p>", close: "</p>", className: "" },
-  { label: "↵", title: "Line break", open: "<br>", close: "", className: "" },
+  { label: "B", title: "Bold", kind: "bold", open: "<strong>", close: "</strong>", className: "font-bold" },
+  { label: "I", title: "Italic", kind: "italic", open: "<em>", close: "</em>", className: "italic" },
+  { label: "U", title: "Underline", kind: "underline", open: "<u>", close: "</u>", className: "underline" },
+  { label: "🔗", title: "Link", kind: "link", open: '<a href="https://">', close: "</a>", className: "" },
+  { label: "↵", title: "Line break", kind: "break", open: "<br>", close: "", className: "" },
 ] as const;
 
 export interface EditableStep {
@@ -96,6 +97,9 @@ export function SequenceEditor({
   const [steps, setSteps] = useState<EditableStep[]>(initial);
   const [open, setOpen] = useState<string | null>(initial[0]?.key ?? null);
   const bodyRefs = useRef<Record<string, HTMLTextAreaElement | null>>({});
+  const richRefs = useRef<Record<string, RichBodyHandle | null>>({});
+  /** Steps shown as raw HTML instead of as the email reads. */
+  const [htmlMode, setHtmlMode] = useState<Record<string, boolean>>({});
   const [dragIndex, setDragIndex] = useState<number | null>(null);
   const [dropIndex, setDropIndex] = useState<number | null>(null);
 
@@ -250,6 +254,8 @@ export function SequenceEditor({
 
   /** Inserts at the cursor rather than appending — §9.3 asks for a menu, not typing. */
   function insertTag(index: number, tag: string) {
+    const rich = !htmlMode[steps[index].key] ? richRefs.current[steps[index].key] : null;
+    if (rich) return rich.insertText(tag);
     const field = bodyRefs.current[steps[index].key];
     const body = steps[index].email_body;
     if (!field) return update(index, { email_body: body + tag });
@@ -522,7 +528,11 @@ export function SequenceEditor({
                             type="button"
                             title={f.title}
                             aria-label={f.title}
-                            onClick={() => wrap(index, f.open, f.close)}
+                            onClick={() => {
+                              const rich = !htmlMode[step.key] ? richRefs.current[step.key] : null;
+                              if (rich) rich.format(f.kind);
+                              else wrap(index, f.open, f.close);
+                            }}
                             className={cn(
                               "h-6 w-6 text-[11px] text-muted-foreground hover:bg-muted hover:text-foreground",
                               f.className,
@@ -551,8 +561,21 @@ export function SequenceEditor({
                           ))}
                         </DropdownMenuContent>
                       </DropdownMenu>
+                      <Button variant="outline" size="sm" className="h-6 text-[11px]" aria-pressed={Boolean(htmlMode[step.key])}
+                        onClick={() => setHtmlMode((m) => ({ ...m, [step.key]: !m[step.key] }))}>
+                        {htmlMode[step.key] ? "Visual editor" : "Edit HTML"}
+                      </Button>
                     </div>
                   </div>
+                  {!htmlMode[step.key] ? (
+                    <RichBody
+                      ref={(h) => { richRefs.current[step.key] = h; }}
+                      value={step.email_body}
+                      onChange={(html) => update(index, { email_body: html })}
+                      ariaLabel={`Body of step ${index + 1}`}
+                      className="w-full rounded-md border bg-background p-3 text-sm leading-relaxed"
+                    />
+                  ) : (
                   <textarea
                     ref={(el) => {
                       bodyRefs.current[step.key] = el;
@@ -563,8 +586,9 @@ export function SequenceEditor({
                     spellCheck
                     className="w-full rounded-md border bg-background p-2 font-mono text-xs leading-relaxed"
                   />
+                  )}
                   <p className="text-[11px] text-muted-foreground">
-                    HTML and spintax (<code>{"{a|b}"}</code>) are both preserved as typed.
+                    Type as the email reads. Spintax (<code>{"{a|b}"}</code>) and fields stay exactly as typed; “Edit HTML” shows the source.
                   </p>
                 </div>
 
