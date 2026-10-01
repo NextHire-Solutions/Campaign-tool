@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from "react";
 import { keepPreviousData, useQuery } from "@tanstack/react-query";
-import { ChevronLeft, ChevronRight, Loader2, Search, Trash2, X } from "lucide-react";
+import { ArrowDown, ArrowUp, ChevronLeft, ChevronRight, ChevronsUpDown, Loader2, Search, Trash2, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { RemoveLeadsDialog } from "@/components/campaigns/remove-leads-dialog";
 import { Input } from "@/components/ui/input";
@@ -16,6 +16,8 @@ import {
   LEAD_COLUMN_PREFS_VERSION,
   LEAD_DEFAULT_VISIBLE,
   LEAD_STATUS_LABELS,
+  INSTANTLY_SORTS,
+  LEAD_NAME_SORT,
   type LeadRow,
 } from "@/lib/analytics/lead-columns.ts";
 import { fullNumber } from "@/lib/analytics/format.ts";
@@ -69,6 +71,9 @@ export function CampaignLeads({
     LEAD_DEFAULT_VISIBLE,
   );
   const { sort, toggle } = useTableSort();
+  // The platform comes from the id's shape: an Instantly id is a uuid.
+  const isInstantly = /^[0-9a-f]{8}-/i.test(campaignId);
+  const nameSorted = sort?.key === LEAD_NAME_SORT;
 
   /*
    * Selection is by lead id, not by row index, so it survives paging, sorting
@@ -328,14 +333,27 @@ export function CampaignLeads({
                         }
                         className="size-3.5 cursor-pointer accent-foreground"
                       />
-                      Lead
+                      <button
+                        type="button"
+                        onClick={() => toggle(LEAD_NAME_SORT)}
+                        aria-label="Sort by lead name"
+                        className={cn("group inline-flex items-center gap-1 uppercase tracking-wider hover:text-foreground", nameSorted && "text-foreground")}
+                      >
+                        Lead
+                        {nameSorted ? (
+                          sort!.dir === "asc" ? <ArrowUp className="size-3" /> : <ArrowDown className="size-3" />
+                        ) : (
+                          <ChevronsUpDown className="size-3 opacity-0 group-hover:opacity-50" />
+                        )}
+                      </button>
                     </span>
                   </th>
                   {columns.map((c) => (
                     <SortableHeader
                       key={c.key}
                       label={c.label}
-                      sortKey={c.sortKey}
+                      // Instantly's rows carry fewer fields; a column it cannot sort keeps a plain header.
+                      sortKey={c.sortKey && (!isInstantly || INSTANTLY_SORTS.has(c.sortKey)) ? c.sortKey : undefined}
                       align={c.align ?? "right"}
                       sort={sort}
                       onToggle={toggle}

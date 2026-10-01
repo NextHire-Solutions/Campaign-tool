@@ -113,14 +113,19 @@ export async function GET(
    * when the truth is "Instantly does not report it".
    */
   if (platform === "instantly") {
-    const { data, error } = await sb.rpc("analytics_instantly_lead_rows", {
+    const base = {
       p_team_id: teamId,
       p_campaign_id: campaignId,
       p_search: search,
       p_status: status.length ? status : null,
       p_limit: PAGE_SIZE,
       p_offset: (page - 1) * PAGE_SIZE,
-    });
+    };
+    // Sorting needs migration 094 (p_sort / p_dir); without it, fall back to the default order.
+    let { data, error } = await sb.rpc("analytics_instantly_lead_rows", sort ? { ...base, p_sort: sort, p_dir: dir } : base);
+    if (error && sort && /analytics_instantly_lead_rows|function|parameter/i.test(error.message)) {
+      ({ data, error } = await sb.rpc("analytics_instantly_lead_rows", base));
+    }
     if (error) {
       console.error("[api/campaigns/leads:instantly]", error);
       return NextResponse.json({ error: error.message }, { status: 500 });
@@ -153,6 +158,9 @@ export async function GET(
       rows: list.map((r) => ({
         leadId: r.lead_id,
         email: r.email,
+        // The table reads one `name` (as EmailBison rows give it); without it an
+        // Instantly lead showed only its email, and the Lead sort (by name) looked wrong.
+        name: [r.first_name, r.last_name].filter(Boolean).join(" ") || null,
         firstName: r.first_name,
         lastName: r.last_name,
         company: r.company,
